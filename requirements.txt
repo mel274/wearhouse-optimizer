@@ -1,0 +1,9 @@
+streamlit
+pandas
+numpy
+openrouteservice
+folium
+plotly
+openpyxl
+python-dotenv
+requests
