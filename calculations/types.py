@@ -21,10 +21,16 @@ class RouteMetrics(TypedDict):
     duration: float
     polylines: List[List[Tuple[float, float]]]
 
+class UnservedCustomer(TypedDict):
+    id: int  # Original customer index
+    reason: str
+    demand: int
+
 class Solution(TypedDict):
     solution_found: bool
     routes: List[List[int]]
     route_metrics: List[RouteMetrics]
+    unserved: List[UnservedCustomer]  # New field for failed customers
     metrics: Dict[str, Any]
 
 class Cluster(TypedDict):

@@ -6,7 +6,6 @@ from config import Config
 import utils
 from data_manager import DataManager
 from geo_service import GeoService
-# Updated Import: Use the new modular optimizer
 from calculations.route_optimizer import RouteOptimizer
 from visualizer import MapBuilder
 from session_manager import SessionManager
@@ -25,35 +24,15 @@ def init_session_state():
     if 'geo_service' not in st.session_state: st.session_state.geo_service = None
     if 'warehouse_coords' not in st.session_state: st.session_state.warehouse_coords = None
     if 'file_id' not in st.session_state: st.session_state.file_id = None
-    if 'operation_mode' not in st.session_state: st.session_state.operation_mode = "Strategic Planning (Center of Gravity)"
-    if 'last_operation_mode' not in st.session_state: st.session_state.last_operation_mode = st.session_state.operation_mode
 
 def setup_sidebar():
     if os.path.exists("michelin-logo-1.png"):
         st.sidebar.image("michelin-logo-1.png", use_container_width=True)
     st.sidebar.header("⚙️ Settings")
-
-    # --- Mode Selector ---
-    modes = ["Strategic Planning (Center of Gravity)", "Daily Route Planning"]
-    st.session_state.operation_mode = st.sidebar.radio(
-        "**Operation Mode**", modes, 
-        help="'Strategic' finds the best warehouse location. 'Daily' plans routes from a fixed warehouse."
-    )
-
-    # --- State Cleanup on Mode Change ---
-    if st.session_state.operation_mode != st.session_state.get('last_operation_mode'):
-        keys_to_clear = ['warehouse_coords', 'solution', 'data', 'file_id']
-        for key in keys_to_clear:
-            if key in st.session_state:
-                st.session_state[key] = None
-        st.session_state.last_operation_mode = st.session_state.operation_mode
-        st.info("Mode changed. Cleared session state. Rerunning...")
-        st.rerun()
     
     # Initialize services
     if Config.OPENROUTESERVICE_API_KEY or Config.RADAR_API_KEY:
         if st.session_state.geo_service is None:
-            # GeoService now strictly handles Geocoding
             st.session_state.geo_service = GeoService(Config.OPENROUTESERVICE_API_KEY)
         st.sidebar.success("✅ API Key loaded")
     else:
@@ -74,7 +53,6 @@ def setup_sidebar():
         'service_time_minutes': service_time_minutes,
         'data_manager': DataManager(),
         'map_builder': MapBuilder(),
-        # Instantiate new modular optimizer
         'route_optimizer': RouteOptimizer(Config.OPENROUTESERVICE_API_KEY)
     }
 
@@ -106,48 +84,23 @@ def tab_data_upload(services):
                         st.rerun()
 
                 if geocoded_count > 0:
-                    warehouse_location_for_map = None
-
-                    # --- Daily Mode: Manual Warehouse Input ---
-                    if st.session_state.operation_mode == "Daily Route Planning":
-                        st.subheader("📍 Set Warehouse Location")
-                        manual_address = st.text_input("Enter Warehouse Address", "")
-                        if manual_address and st.button("Geocode Warehouse Address"):
-                            try:
-                                coords = st.session_state.geo_service.get_coordinates(manual_address)
-                                if coords:
-                                    st.session_state.warehouse_coords = coords
-                                    st.success(f"Warehouse geocoded to: {coords}")
-                                    st.rerun()
-                                else:
-                                    st.error("Could not geocode address.")
-                            except Exception as e:
-                                st.error(f"Geocoding failed: {e}")
+                    st.subheader("📈 Center of Gravity Analysis")
+                    cog = services['data_manager'].calculate_center_of_gravity(st.session_state.data)
+                    
+                    if cog['lat'] and st.session_state.geo_service:
+                        raw_coords = (cog['lat'], cog['lng'])
+                        snapped_coords = st.session_state.geo_service.snap_to_road(raw_coords)
                         
-                        if st.session_state.warehouse_coords:
-                            lat, lng = st.session_state.warehouse_coords
-                            warehouse_location_for_map = {'lat': lat, 'lng': lng}
+                        if snapped_coords != raw_coords:
+                            cog['lat'], cog['lng'] = snapped_coords
+                            st.info(f"ℹ️ Warehouse Auto-Snapped to nearest road: {snapped_coords}")
 
-                    # --- Strategic Mode: Center of Gravity ---
-                    else:
-                        st.subheader("📈 Center of Gravity Analysis")
-                        cog = services['data_manager'].calculate_center_of_gravity(st.session_state.data)
-                        
-                        if cog['lat'] and st.session_state.geo_service:
-                            raw_coords = (cog['lat'], cog['lng'])
-                            snapped_coords = st.session_state.geo_service.snap_to_road(raw_coords)
-                            
-                            if snapped_coords != raw_coords:
-                                cog['lat'], cog['lng'] = snapped_coords
-                                st.info(f"ℹ️ Warehouse Auto-Snapped to nearest road: {snapped_coords}")
-
-                        st.session_state.warehouse_coords = (cog['lat'], cog['lng'])
-                        warehouse_location_for_map = cog
-
-                    # --- Map Visualization (Common to both modes) ---
-                    if warehouse_location_for_map and warehouse_location_for_map['lat'] is not None:
+                    st.session_state.warehouse_coords = (cog['lat'], cog['lng'])
+                    
+                    # Show the warehouse and customer locations on the map
+                    if cog['lat'] is not None:
                         st.subheader("🗺️ Customer & Warehouse Map")
-                        phase1_map = services['map_builder'].create_phase1_map(st.session_state.data, warehouse_location_for_map)
+                        phase1_map = services['map_builder'].create_phase1_map(st.session_state.data, cog)
                         st.components.v1.html(phase1_map._repr_html_(), height=600)
                 
         except Exception as e:
@@ -174,12 +127,8 @@ def tab_optimization(services):
 
     warehouse_address = st.text_input("Warehouse Location (Snapped)", value=default_wh, help="This is the starting point for all trucks.")
     
-    if st.session_state.operation_mode == "Daily Route Planning":
-        demand_col = 'total_quantity'
-        st.info("Using 'Total Quantity' for daily demand.")
-    else:
-        demand_col = 'avg_quantity'
-        st.info("Using 'Average Quantity' for strategic planning.")
+    demand_col = 'avg_quantity'
+    st.info("Using average quantity for route planning.")
     
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
@@ -187,7 +136,7 @@ def tab_optimization(services):
         
     estimated_demand = np.ceil(valid_coords[demand_col]).astype(int)
     
-    st.info(f"ℹ️ **Strategy:** \n1. **K-Means**: Initial Grouping.\n2. **Matrix Refinement**: Swap customers to correct routes.\n3. **Route Merging**: Combine routes to save stem kilometers.\n4. **Optimization**: Final detailed routing.")
+    st.info(f"ℹ️ **Strategy:** \n1. **K-Means**: Initial Grouping.\n2. **Matrix Refinement**: Swap customers to correct routes.\n3. **Route Merging**: Combine routes to save stem kilometers.\n4. **Optimization**: Final detailed routing (ORS).")
     
     if st.button("🚀 Run Auto-Optimization", type="primary"):
         try:
@@ -210,7 +159,7 @@ def tab_optimization(services):
                     'service_time_seconds': services['service_time_minutes'] * 60
                 }
                 
-                # CALL THE NEW OPTIMIZER
+                # CALL OPTIMIZER
                 solution = services['route_optimizer'].solve(
                     [f"Loc {i}" for i in range(len(matrix_coords))],
                     demands,
@@ -222,12 +171,47 @@ def tab_optimization(services):
                 
                 if solution['solution_found']:
                     num_routes = len(solution['routes'])
-                    st.success(f"Optimization Complete: {num_routes} trucks used")
+                    unserved_list = solution.get('unserved', [])
+                    
+                    # --- Status Reporting ---
+                    if unserved_list:
+                        st.warning(f"Optimization Complete with Warnings: {num_routes} trucks used. {len(unserved_list)} customers could not be served.")
+                        
+                        # Display suggestions generated by the optimizer
+                        if 'suggestions' in solution and not solution['suggestions'].get('all_served', True):
+                            st.subheader("💡 Optimization Suggestions")
+                            suggestions = solution['suggestions']
+                            
+                            # Prioritize fleet utilization suggestion
+                            if num_routes < params['fleet_size']:
+                                st.info(f"**Suggestion**: Only {num_routes} of {params['fleet_size']} available trucks were used. The remaining unserved customers could not be formed into a valid route within the current constraints (e.g., shift time). Consider extending the shift time.")
+
+                            # Display detailed suggestions from the optimizer
+                            for suggestion in suggestions.get('suggestions', []):
+                                with st.expander(f"🔹 {suggestion['message']}", expanded=False):
+                                    st.write(suggestion.get('suggestion', ''))
+                                    if 'details' in suggestion:
+                                        st.json(suggestion['details'], expanded=False)
+                        
+                        # Show Unserved Customers
+                        with st.expander(f"⚠️ Unserved Customers ({len(unserved_list)})", expanded=False):
+                            unserved_data = []
+                            for u in unserved_list:
+                                if u['id'] - 1 < len(valid_coords):
+                                    cust = valid_coords.iloc[u['id'] - 1]
+                                    unserved_data.append({
+                                        "ID": cust.get("מס' לקוח", ""),
+                                        "Name": cust.get("שם לקוח", ""),
+                                        "Demand": u['demand'],
+                                        "Reason": u['reason']
+                                    })
+                            if unserved_data:
+                                st.dataframe(pd.DataFrame(unserved_data))
+                    else:
+                        st.success(f"Optimization Complete: {num_routes} trucks used. All customers served.")
                     
                     # --- MAP Visualization ---
                     st.subheader("🗺️ Route Map")
-                    # Pass geo_service explicitly for polylines if needed by visualizer, 
-                    # though optimizer now returns polylines in metrics.
                     phase2_map = services['map_builder'].create_phase2_map(
                         solution, valid_coords, wh_coords, 
                         geo_service=st.session_state.geo_service
@@ -287,39 +271,99 @@ def tab_optimization(services):
             logger.error(f"Optimization error: {e}")
 
 def tab_export():
-    st.header("📤 Export Results")
+    st.header("📊 Optimization Results")
     if st.session_state.solution and st.session_state.solution['solution_found']:
         try:
-            routes_data = []
             solution = st.session_state.solution
+            metrics = solution.get('metrics', {})
             
+            # Display key metrics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Customers Served", f"{metrics.get('customers_served', 0)}")
+            with col2:
+                st.metric("Vehicles Used", f"{metrics.get('num_vehicles_used', 0)}")
+            with col3:
+                st.metric("Total Distance", f"{metrics.get('total_distance', 0)/1000:.1f} km")
+            
+            # Display optimization suggestions if any
+            if 'suggestions' in solution and not solution['suggestions'].get('all_served', True):
+                st.subheader("🔍 Optimization Suggestions")
+                suggestions = solution['suggestions']
+                
+                # Show unserved summary
+                unserved = suggestions.get('unserved_summary', {})
+                if unserved:
+                    st.warning(f"{unserved['count']} customers could not be served")
+                    
+                    # Show reasons for unserved customers
+                    if unserved.get('reasons', {}).get('capacity', 0) > 0:
+                        st.error(f"🚚 {unserved['reasons']['capacity']} customers exceed vehicle capacity")
+                    if unserved.get('reasons', {}).get('time', 0) > 0:
+                        st.warning(f"⏱️ {unserved['reasons']['time']} customers couldn't be served within time constraints")
+                
+                # Display each suggestion
+                for suggestion in suggestions.get('suggestions', []):
+                    with st.expander(f"🔹 {suggestion['message']}"):
+                        st.write(suggestion.get('suggestion', ''))
+                        if 'details' in suggestion:
+                            st.json(suggestion['details'], expanded=False)
+            
+            # Export data to CSV
+            st.subheader("📤 Export Results")
+            routes_data = []
+            
+            # Export Served Customers
             for route_idx, route in enumerate(solution['routes']):
                 for stop_idx, node_idx in enumerate(route):
                     if node_idx == 0:
                         routes_data.append({
-                            'Route': route_idx + 1, 'Stop': stop_idx, 'Type': 'Warehouse',
-                            'Customer Name': 'Warehouse', 'Address': 'Warehouse', 'Customer ID': '0',
-                            'Quantity (Avg)': 0
+                            'Type': 'Warehouse', 'Status': 'Served',
+                            'Route': route_idx + 1, 'Stop': stop_idx, 
+                            'Customer Name': 'Warehouse', 'Address': 'Warehouse', 
+                            'Customer ID': '0', 'Quantity': 0
                         })
                     else:
                         if st.session_state.data is not None and node_idx - 1 < len(st.session_state.data):
                             customer = st.session_state.data.iloc[node_idx - 1]
                             routes_data.append({
-                                'Route': route_idx + 1, 
-                                'Stop': stop_idx, 
-                                'Type': 'Customer',
+                                'Type': 'Customer', 'Status': 'Served',
+                                'Route': route_idx + 1, 'Stop': stop_idx, 
                                 'Customer Name': customer.get('שם לקוח', ''),
                                 'Address': customer.get('כתובת', ''),
                                 'Customer ID': str(customer.get('מס\' לקוח', '')),
-                                'Quantity (Avg)': round(customer.get('avg_quantity', 0), 1),
-                                'Visits': customer.get('num_visits', 0)
+                                'Quantity': round(customer.get('avg_quantity', 0), 1),
+                                'Reason': ''
                             })
             
+            # Export Unserved Customers
+            unserved_list = solution.get('unserved', [])
+            for u in unserved_list:
+                if st.session_state.data is not None and u['id'] - 1 < len(st.session_state.data):
+                    customer = st.session_state.data.iloc[u['id'] - 1]
+                    routes_data.append({
+                        'Type': 'Customer', 'Status': 'Not Served',
+                        'Route': 'N/A', 'Stop': 'N/A',
+                        'Customer Name': customer.get('שם לקוח', ''),
+                        'Address': customer.get('כתובת', ''),
+                        'Customer ID': str(customer.get('מס\' לקוח', '')),
+                        'Quantity': u['demand'],
+                        'Reason': u.get('reason', 'Not served')
+                    })
+            
+            # Display and export the data
             routes_df = pd.DataFrame(routes_data)
-            st.subheader("Optimized Routes")
             st.dataframe(routes_df, width="stretch")
+            
+            # Add download button
             csv = routes_df.to_csv(index=False, encoding='utf-8-sig')
-            st.download_button("📥 Download CSV", csv, "optimized_routes.csv", "text/csv")
+            st.download_button(
+                "💾 Download Full Report (CSV)", 
+                csv, 
+                "optimization_results.csv", 
+                "text/csv",
+                key='download-csv'
+            )
             
         except Exception as e:
             st.error(f"Export Error: {str(e)}")

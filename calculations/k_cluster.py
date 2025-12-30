@@ -22,16 +22,15 @@ def perform_clustering(customer_coords: List[Coords],
         return []
 
     # 1. Determine K (Number of Trucks)
+    # We will set the number of clusters (K) to the maximum fleet size.
+    # This forces the optimizer to consider using all available vehicles from the start.
+    # The merging phase can later combine routes if fewer vehicles are sufficient.
+    search_k = fleet_size
+
     total_demand = sum(customer_demands)
     min_k_by_volume = int(math.ceil(total_demand / capacity))
-    min_k = max(min_k_by_volume, 1)
-    
-    # We allow some slack for the optimizer to work with
-    # Start with a count between Min required and Max Fleet
-    search_k = min(fleet_size, max(min_k + 1, int(len(customer_coords) / 4)))
-    search_k = max(search_k, min_k)
-    
-    logger.info(f"Clustering: Demand requires {min_k_by_volume} trucks. Starting with K={search_k}.")
+
+    logger.info(f"Clustering: Demand requires at least {min_k_by_volume} trucks. Forcing K={search_k} to match max fleet size.")
 
     if not customer_coords:
         return []

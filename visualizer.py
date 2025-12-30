@@ -1,5 +1,6 @@
 """
 Map visualization service for warehouse optimization and route planning.
+Version: 2.0 (Failed Customer Support)
 """
 
 import folium
@@ -53,26 +54,12 @@ class MapBuilder:
                     popup='<div>Center of Gravity</div>',
                     icon=folium.Icon(color='red', icon='star', prefix='fa')
                 ).add_to(m)
-                
-                # Optional: Keep the influence area but make it very subtle or remove if requested.
-                # Keeping it for now as context, but customers are now just dots.
-                folium.Circle(
-                    location=[cog['lat'], cog['lng']],
-                    radius=2000,  # 2km radius
-                    color='red',
-                    fill=True,
-                    fillOpacity=0.05,
-                    weight=1,
-                    popup='<div>Influence Area (2 km)</div>'
-                ).add_to(m)
             
             # Add customer markers
             for idx, row in df.iterrows():
                 if pd.notna(row['lat']) and pd.notna(row['lng']):
-                    # UPDATED: Fixed radius for all customers (Just a dot)
                     radius = 3 
                     
-                    # Create popup
                     popup_html = f"""
                     <div style="font-family: Arial, sans-serif; font-size: 12px;">
                         <strong>{row.get('שם לקוח', 'N/A')}</strong><br>
@@ -85,24 +72,16 @@ class MapBuilder:
                         location=[row['lat'], row['lng']],
                         radius=radius,
                         popup=folium.Popup(popup_html, max_width=300),
-                        color='blue',       # Border color
+                        color='blue',
                         fill=True,
-                        fillColor='blue',   # Fill color
+                        fillColor='blue',
                         fillOpacity=0.8,
                         weight=1
                     ).add_to(m)
             
-            # Add layer control
             folium.LayerControl().add_to(m)
-
-            folium.plugins.Fullscreen(
-                position='topright',
-                title='Expand map',
-                title_cancel='Exit full screen',
-                force_separate_button=True
-            ).add_to(m)
+            folium.plugins.Fullscreen().add_to(m)
             
-            logger.info("Phase 1 map created successfully")
             return m
             
         except Exception as e:
@@ -112,7 +91,7 @@ class MapBuilder:
     def create_phase2_map(self, solution: Dict[str, Any], locations_df: pd.DataFrame, 
                          warehouse_coords: Tuple[float, float], geo_service=None) -> folium.Map:
         """
-        Create Phase 2 map showing optimized delivery routes on actual roads.
+        Create Phase 2 map showing optimized delivery routes and unserved customers.
         """
         try:
             if not solution.get('solution_found', False):
@@ -135,34 +114,26 @@ class MapBuilder:
                 icon=folium.Icon(color='darkred', icon='home', prefix='fa')
             ).add_to(m)
             
-            # Process routes
+            # 1. Process Valid Routes
             routes = solution.get('routes', [])
-            
             for route_idx, route in enumerate(routes):
-                if len(route) <= 1:  # Skip empty routes
-                    continue
+                if len(route) <= 1: continue
                 
-                # Get color for this route
                 color = self.colors[route_idx % len(self.colors)]
-                
-                # Collect coordinates for this route
                 full_route_path = []
                 
+                # Plot Route path and stops
                 for i in range(len(route)):
-                    # Get current node coordinates
                     curr_node_idx = route[i]
                     if curr_node_idx == 0:
                         curr_coords = warehouse_coords
                     else:
-                        # Get customer info (adjust for 0-based depot)
                         if curr_node_idx - 1 < len(locations_df):
                             cust = locations_df.iloc[curr_node_idx - 1]
                             curr_coords = (cust['lat'], cust['lng'])
-                            
-                            # Add marker for the stop
                             self._add_stop_marker(m, cust, curr_coords, i, route_idx + 1, color)
                     
-                    # Get path to next node
+                    # Connect to next node
                     if i < len(route) - 1:
                         next_node_idx = route[i+1]
                         if next_node_idx == 0:
@@ -174,14 +145,15 @@ class MapBuilder:
                             else:
                                 continue
 
-                        # Fetch Geometry
+                        # Use polylines if available in metrics, otherwise fallback
+                        # Note: We rely on visualizer receiving polyline data or using fallback
                         if geo_service:
                             segment_points = geo_service.get_route_polyline(curr_coords, next_coords)
                             full_route_path.extend(segment_points)
                         else:
                             full_route_path.extend([curr_coords, next_coords])
                 
-                # Draw route polyline
+                # Draw polyline for route
                 if full_route_path:
                     folium.PolyLine(
                         locations=full_route_path,
@@ -190,16 +162,20 @@ class MapBuilder:
                         opacity=0.8,
                         popup=f'<div>Route {route_idx + 1}</div>'
                     ).add_to(m)
-            
-            # Add route layer control
-            folium.LayerControl().add_to(m)
 
-            folium.plugins.Fullscreen(
-                position='topright',
-                title='Expand map',
-                title_cancel='Exit full screen',
-                force_separate_button=True
-            ).add_to(m)
+            # 2. Process Unserved Customers (Failed)
+            unserved_list = solution.get('unserved', [])
+            for unserved in unserved_list:
+                u_idx = unserved['id']
+                if u_idx - 1 < len(locations_df):
+                    cust = locations_df.iloc[u_idx - 1]
+                    coords = (cust['lat'], cust['lng'])
+                    reason = unserved.get('reason', 'Unknown error')
+                    
+                    self._add_failed_marker(m, cust, coords, reason)
+
+            folium.LayerControl().add_to(m)
+            folium.plugins.Fullscreen().add_to(m)
             
             return m
             
@@ -229,4 +205,22 @@ class MapBuilder:
                 icon_size=(24, 24),
                 icon_anchor=(12, 12)
             )
+        ).add_to(m)
+
+    def _add_failed_marker(self, m, customer, coords, reason):
+        """Helper to add a warning marker for failed customers."""
+        popup_html = f"""
+        <div style="font-family: Arial, sans-serif; color: #a94442;">
+            <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
+            <span style="font-weight: bold;">⚠️ COULD NOT SERVE</span><br>
+            Reason: {reason}<br>
+            Avg Qty: {round(customer.get('avg_quantity', 0), 1)}
+        </div>
+        """
+        
+        folium.Marker(
+            location=coords,
+            popup=folium.Popup(popup_html, max_width=300),
+            icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa'),
+            tooltip=f"Unserved: {customer.get('שם לקוח', 'N/A')}"
         ).add_to(m)
