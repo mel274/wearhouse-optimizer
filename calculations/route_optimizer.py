@@ -53,6 +53,46 @@ class RouteOptimizer:
             customer_coords, customer_demands, 
             params['fleet_size'], params['capacity']
         )
+        
+        # Cluster Mitosis: Force split clusters to utilize full fleet in fallback mode
+        if fallback_mode and len(initial_clusters) < params['fleet_size']:
+            logger.info(f"Fallback Mode: Initial clustering produced only {len(initial_clusters)} clusters. "
+                      f"Attempting to split clusters to utilize all {params['fleet_size']} vehicles...")
+            
+            while len(initial_clusters) < params['fleet_size']:
+                # Find all clusters with more than 1 customer that can be split
+                splittable_clusters = [
+                    cluster for cluster in initial_clusters 
+                    if len(cluster['indices']) > 1
+                ]
+                
+                if not splittable_clusters:
+                    logger.warning("No more splittable clusters found. Cannot utilize full fleet.")
+                    break
+                
+                # Find the heaviest cluster (by total demand)
+                heaviest = max(
+                    splittable_clusters,
+                    key=lambda c: sum(demands[i] for i in c['indices'])
+                )
+                
+                # Sort cluster indices by latitude for spatial split
+                sorted_indices = sorted(
+                    heaviest['indices'],
+                    key=lambda x: coords[x][0]  # Sort by latitude (first element of coords)
+                )
+                
+                # Split into two halves
+                mid = len(sorted_indices) // 2
+                left_half = sorted_indices[:mid]
+                right_half = sorted_indices[mid:]
+                
+                # Remove the original cluster and add the two new ones
+                initial_clusters.remove(heaviest)
+                initial_clusters.append({'indices': left_half})
+                initial_clusters.append({'indices': right_half})
+                
+                logger.info(f"Fallback: Split cluster into two. New cluster count: {len(initial_clusters)}")
 
         # --- Phase 2: Global Relocation (Corridor Scavenging) ---
         logger.info("Phase 2: Global Relocation...")
