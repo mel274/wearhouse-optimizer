@@ -27,72 +27,32 @@ class RouteOptimizer:
                                  customer_coords: List[Tuple[float, float]],
                                  customer_demands: List[int], 
                                  params: OptimizationParams, 
-                                 matrix_data: Dict,  # Changed type hint
-                                 fallback_mode: bool = False) -> Solution:
+                                 matrix_data: Dict,
+                                 enable_merging: bool = True) -> Solution:
         """
         Runs the optimization pipeline with the given parameters.
-        
+
         Args:
-            locations: List of location identifiers
-            demands: List of demand values for each location
-            coords: List of (lat, lng) coordinates for all locations
-            customer_coords: List of (lat, lng) coordinates for customer locations only
-            customer_demands: List of demand values for customer locations only
-            params: Optimization parameters including fleet size and capacity
-            matrix_data: Precomputed distance and duration matrices
-            fallback_mode: If True, skips route merging to maximize fleet usage
-            
+            locations: List of location identifiers.
+            demands: List of demand values for each location.
+            coords: List of (lat, lng) coordinates for all locations.
+            customer_coords: List of (lat, lng) coordinates for customer locations only.
+            customer_demands: List of demand values for customer locations only.
+            params: Optimization parameters including fleet size and capacity.
+            matrix_data: Precomputed distance and duration matrices.
+            enable_merging: If True, merges routes to improve efficiency.
+
         Returns:
-            Solution: The optimized routing solution
+            Solution: The optimized routing solution.
         """
         all_customer_indices = set(range(1, len(locations)))
-        
+
         # --- Phase 1: K-Means Clustering ---
         logger.info("Phase 1: Initial Clustering...")
         initial_clusters = k_cluster.perform_clustering(
             customer_coords, customer_demands, 
             params['fleet_size'], params['capacity']
         )
-        
-        # Cluster Mitosis: Force split clusters to utilize full fleet in fallback mode
-        if fallback_mode and len(initial_clusters) < params['fleet_size']:
-            logger.info(f"Fallback Mode: Initial clustering produced only {len(initial_clusters)} clusters. "
-                      f"Attempting to split clusters to utilize all {params['fleet_size']} vehicles...")
-            
-            while len(initial_clusters) < params['fleet_size']:
-                # Find all clusters with more than 1 customer that can be split
-                splittable_clusters = [
-                    cluster for cluster in initial_clusters 
-                    if len(cluster['indices']) > 1
-                ]
-                
-                if not splittable_clusters:
-                    logger.warning("No more splittable clusters found. Cannot utilize full fleet.")
-                    break
-                
-                # Find the heaviest cluster (by total demand)
-                heaviest = max(
-                    splittable_clusters,
-                    key=lambda c: sum(demands[i] for i in c['indices'])
-                )
-                
-                # Sort cluster indices by latitude for spatial split
-                sorted_indices = sorted(
-                    heaviest['indices'],
-                    key=lambda x: coords[x][0]  # Sort by latitude (first element of coords)
-                )
-                
-                # Split into two halves
-                mid = len(sorted_indices) // 2
-                left_half = sorted_indices[:mid]
-                right_half = sorted_indices[mid:]
-                
-                # Remove the original cluster and add the two new ones
-                initial_clusters.remove(heaviest)
-                initial_clusters.append({'indices': left_half})
-                initial_clusters.append({'indices': right_half})
-                
-                logger.info(f"Fallback: Split cluster into two. New cluster count: {len(initial_clusters)}")
 
         # --- Phase 2: Global Relocation (Corridor Scavenging) ---
         logger.info("Phase 2: Global Relocation...")
@@ -100,21 +60,23 @@ class RouteOptimizer:
             initial_clusters, matrix_data, demands, params
         )
 
-        # --- Phase 3: Merging (Skipped in fallback mode) ---
-        if fallback_mode:
-            logger.info("Fallback Mode: Skipping Route Merging to maximize fleet usage.")
-            merged_clusters = refined_clusters
-        else:
-            logger.info("Phase 3: Route Merging...")
+        # --- Phase 3: Merging ---
+        if enable_merging:
+            logger.info("Phase 3: Route Merging enabled for efficiency.")
             merged_clusters = merging.merge_routes(
                 refined_clusters, matrix_data, demands, params
             )
+        else:
+            logger.info("Phase 3: Route Merging disabled to maximize coverage.")
+            merged_clusters = refined_clusters
 
         # --- Phase 4: Final Optimization (Per Truck) ---
         logger.info("Phase 4: Final Route Optimization...")
         return self._finalize_routes(
             merged_clusters, coords, demands, params, 
-            all_customer_indices, prioritize_coverage=fallback_mode
+            all_customer_indices, 
+            prioritize_coverage=not enable_merging,
+            enable_splitting=not enable_merging
         )
 
     def solve(self, 
@@ -123,7 +85,9 @@ class RouteOptimizer:
               params: OptimizationParams, 
               coords: List[Tuple[float, float]]) -> Solution:
         """
-        Executes the optimization pipeline with support for handling unserved customers.
+        Executes the optimization pipeline with a two-stage strategy:
+        1. Efficiency-focused: Tries to find the most efficient solution, possibly using fewer vehicles.
+        2. Coverage-focused: If the first fails, it prioritizes serving the maximum number of customers.
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
@@ -134,16 +98,14 @@ class RouteOptimizer:
             
             logger.info("Phase 0: Fetching Distance Matrix...")
             matrix_data = self.ors_handler.get_distance_matrix(coords)
-            time.sleep(1)  # Gentle cool-down
+            time.sleep(1)
 
             customer_coords = coords[1:]
             customer_demands = demands[1:]
             
-            # Initialize tracking of all customer indices (1-based)
-            all_customer_indices = set(range(1, len(locations)))
-            
-            # Run the optimization pipeline - initial pass
-            solution = self._run_optimization_pipeline(
+            # --- Strategy 1: Efficiency First (with route merging) ---
+            logger.info("Running Strategy 1: Efficiency-focused optimization...")
+            efficiency_solution = self._run_optimization_pipeline(
                 locations=locations,
                 demands=demands,
                 coords=coords,
@@ -151,39 +113,41 @@ class RouteOptimizer:
                 customer_demands=customer_demands,
                 params=params,
                 matrix_data=matrix_data,
-                fallback_mode=False
+                enable_merging=True  # Prioritize efficiency
             )
             
-            # Check if we have unserved customers and try fallback if needed
-            if solution.get('unserved'):
-                logger.info(f"Initial optimization left {len(solution['unserved'])} unserved customers. "
-                          "Attempting fallback with Max-Coverage mode...")
-                
-                # Run fallback optimization
-                fallback_solution = self._run_optimization_pipeline(
-                    locations=locations,
-                    demands=demands,
-                    coords=coords,
-                    customer_coords=customer_coords,
-                    customer_demands=customer_demands,
-                    params=params,
-                    matrix_data=matrix_data,
-                    fallback_mode=True
-                )
-                
-                # Only use fallback if it serves strictly more customers
-                initial_served = len(locations) - 1 - len(solution.get('unserved', []))
-                fallback_served = len(locations) - 1 - len(fallback_solution.get('unserved', []))
-                
-                if fallback_served > initial_served:
-                    logger.info(f"Fallback successful: Served {fallback_served} customers "
-                              f"(vs {initial_served} in initial solution)")
-                    return fallback_solution
-                else:
-                    logger.info(f"Keeping initial solution: Serves {initial_served} customers "
-                              f"(fallback served {fallback_served})")
+            # If all customers are served, no need for the second strategy
+            if not efficiency_solution.get('unserved'):
+                logger.info("Efficiency strategy served all customers. Solution found.")
+                return efficiency_solution
             
-            return solution
+            # --- Strategy 2: Max-Coverage (no route merging) ---
+            logger.info(f"Strategy 1 left {len(efficiency_solution['unserved'])} unserved customers. "
+                      "Running Strategy 2: Max-Coverage optimization...")
+            
+            max_coverage_solution = self._run_optimization_pipeline(
+                locations=locations,
+                demands=demands,
+                coords=coords,
+                customer_coords=customer_coords,
+                customer_demands=customer_demands,
+                params=params,
+                matrix_data=matrix_data,
+                enable_merging=False  # Prioritize coverage over efficiency
+            )
+            
+            # --- Compare and Select the Best Solution ---
+            initial_served = len(locations) - 1 - len(efficiency_solution.get('unserved', []))
+            coverage_served = len(locations) - 1 - len(max_coverage_solution.get('unserved', []))
+            
+            if coverage_served > initial_served:
+                logger.info(f"Max-Coverage strategy is better: Served {coverage_served} customers "
+                          f"(vs {initial_served} with efficiency strategy).")
+                return max_coverage_solution
+            else:
+                logger.info(f"Efficiency strategy is better or equal: Serves {initial_served} customers "
+                          f"(vs {coverage_served} with max-coverage). Keeping initial solution.")
+                return efficiency_solution
 
         except Exception as e:
             logger.error(f"Optimization Failed: {e}")
@@ -279,75 +243,51 @@ class RouteOptimizer:
                          demands: List[int],
                          params: OptimizationParams,
                          all_indices: Set[int],
-                         prioritize_coverage: bool = False) -> Solution:
+                         prioritize_coverage: bool = False,
+                         enable_splitting: bool = False) -> Solution:
         """
         Sends each cluster to ORS for detailed path optimization.
         Handles unserved customers by creating new routes when possible.
         Returns a solution with detailed metrics and optimization suggestions.
         """
-        final_routes = []
-        route_metrics = []
         unserved_customers: List[UnservedCustomer] = []
-        served_indices = set()
-        
         warehouse_coord = coords[0]
         matrix_data = self.ors_handler.get_distance_matrix(coords)
-        self.max_vehicles = params['fleet_size']
-        max_vehicles = self.max_vehicles
-        
-        # Set priority for jobs if in coverage mode
+        max_vehicles = params['fleet_size']
         job_priority = 100 if prioritize_coverage else 0
 
-        for i, cluster in enumerate(clusters):
+        candidate_routes = []
+        clusters_to_process = clusters.copy()
+        i = 0
+
+        while i < len(clusters_to_process):
+            cluster = clusters_to_process[i]
+            i += 1
             indices = cluster['indices']
-            if not indices: 
-                continue
-                
-            # Initial setup for this cluster
-            current_indices = indices.copy()
+            if not indices: continue
+
             valid_indices_for_api = []
-            
-            # Check for single-item overloads first
             for cust_idx in indices:
                 if demands[cust_idx] > params['capacity']:
                     unserved_customers.append({
-                        'id': cust_idx,
-                        'reason': 'Demand exceeds vehicle capacity',
+                        'id': cust_idx, 'reason': 'Demand exceeds vehicle capacity',
                         'demand': demands[cust_idx]
                     })
-                    logger.warning(f"Customer {cust_idx} dropped: Demand {demands[cust_idx]} > Capacity {params['capacity']}")
                 else:
                     valid_indices_for_api.append(cust_idx)
             
-            if not valid_indices_for_api:
-                continue
-                
-            # Sort customers by distance from warehouse (furthest first) for removal priority
-            valid_indices_for_api.sort(
-                key=lambda x: matrix_data['distances'][0][x], 
-                reverse=True
-            )
-            
-            # Main optimization loop with graceful degradation
+            if not valid_indices_for_api: continue
+
+            valid_indices_for_api.sort(key=lambda x: matrix_data['distances'][0][x], reverse=True)
+
             route_found = False
             while valid_indices_for_api and not route_found:
-                # Prepare jobs for current set of customers
-                jobs = []
-                for cust_idx in valid_indices_for_api:
-                    c_coords = coords[cust_idx]
-                    jobs.append({
-                        "id": cust_idx,
-                        "service": params['service_time_seconds'],
-                        "amount": [demands[cust_idx]],
-                        "location": [c_coords[1], c_coords[0]],
-                        **(
-                            {"priority": job_priority} 
-                            if prioritize_coverage and job_priority > 0 
-                            else {}
-                        )
-                    })
+                jobs = [{
+                    "id": cust_idx, "service": params['service_time_seconds'],
+                    "amount": [demands[cust_idx]], "location": [coords[cust_idx][1], coords[cust_idx][0]],
+                    **({"priority": job_priority} if prioritize_coverage and job_priority > 0 else {})
+                } for cust_idx in valid_indices_for_api]
                 
-                # Vehicle setup
                 vehicle = {
                     "id": 1, "profile": "driving-car",
                     "start": [warehouse_coord[1], warehouse_coord[0]],
@@ -357,102 +297,75 @@ class RouteOptimizer:
                 }
                 
                 request_body = {"vehicles": [vehicle], "jobs": jobs, "options": {"g": True}}
-            
+
                 try:
-                    # Rate limit sleep
                     time.sleep(0.3)
                     api_res = self.ors_handler.optimize_route(request_body)
-                    
-                    # 1. Check for API/Solver Errors (Technical Failures)
                     if 'code' in api_res and api_res['code'] != 0:
-                         msg = api_res.get('message', 'Unknown Error')
-                         raise Exception(f"ORS Error Code {api_res['code']}: {msg}")
-                    
+                        raise Exception(f"ORS Error Code {api_res['code']}: {api_res.get('message', 'Unknown Error')}")
+
                     current_unserved = []
-                    unassigned_ids = set()
-                    
-                    # 2. Process Unassigned Jobs (Constraint Violations)
                     if 'unassigned' in api_res:
                         for job in api_res['unassigned']:
-                            uid = job['id']
-                            unassigned_ids.add(uid)
-                            
-                            reason = job.get('description', 'Optimization Constraint (Time Window/Routing)')
-                            current_unserved.append({
-                                'id': uid,
-                                'reason': reason,
-                                'demand': demands[uid]
-                            })
-                    
-                    # 3. Process Routes if found
+                            current_unserved.append({'id': job['id'], 'reason': job.get('description', 'Constraint Violation'), 'demand': demands[job['id']]})
+
                     if 'routes' in api_res and api_res['routes']:
                         route_data = api_res['routes'][0]
                         route_duration = route_data.get('duration', 0) + (len(valid_indices_for_api) * params['service_time_seconds'])
-                        
-                        # Check if the route duration is within limits
+
                         if route_duration <= params['max_shift_seconds']:
-                            # Valid route found within constraints
-                            steps = [step['job'] for step in route_data.get('steps', []) if step['type'] == 'job']
-                            full_route = [0] + steps + [0]
-                            
-                            # Track served indices
-                            current_served = set(steps)
-                            served_indices.update(current_served)
-                            
-                            # Identify any dropped customers
-                            dropped_unexpectedly = set(valid_indices_for_api) - current_served - unassigned_ids
-                            for dropped_idx in dropped_unexpectedly:
-                                current_unserved.append({
-                                    'id': dropped_idx,
-                                    'reason': 'Implicitly Dropped by Optimizer',
-                                    'demand': demands[dropped_idx]
-                                })
-                            
+                            steps = {step['job'] for step in route_data.get('steps', []) if step['type'] == 'job'}
                             polylines = self.ors_handler.get_route_polylines(route_data, warehouse_coord)
                             
-                            final_routes.append(full_route)
-                            route_metrics.append({
-                                'distance': route_data.get('distance', 0),
-                                'duration': route_duration,
-                                'polylines': polylines
+                            candidate_routes.append({
+                                'route': [0] + list(steps) + [0],
+                                'metrics': {'distance': route_data.get('distance', 0), 'duration': route_duration, 'polylines': polylines},
+                                'served_indices': steps,
+                                'unserved_in_route': current_unserved
                             })
-                            
-                            # Add any unserved customers to the global list
-                            unserved_customers.extend(current_unserved)
-                            route_found = True  # Exit the while loop
-                            continue  # Move to next cluster
-                        
-                        else:
-                            # Route found but exceeds time constraints
-                            logger.warning(f"Truck {i}: Route duration {route_duration}s exceeds max shift {params['max_shift_seconds']}s")
-                    
-                    # If we get here, either no route was found or it violated constraints
-                    # Remove the most expensive customer (furthest from warehouse) and try again
+                            route_found = True
+                            continue
+
+                    if enable_splitting and len(clusters_to_process) < max_vehicles * 2 and len(valid_indices_for_api) > 1:
+                        sorted_by_lat = sorted(valid_indices_for_api, key=lambda c: coords[c][0])
+                        mid = len(sorted_by_lat) // 2
+                        c1, c2 = sorted_by_lat[:mid], sorted_by_lat[mid:]
+                        if c1 and c2:
+                            clusters_to_process.extend([{'indices': c1}, {'indices': c2}])
+                            route_found = True
+                            continue
+
                     if valid_indices_for_api:
-                        removed_cust = valid_indices_for_api.pop(0)  # Already sorted by distance
-                        unserved_customers.append({
-                            'id': removed_cust,
-                            'reason': 'Removed to save route feasibility',
-                            'demand': demands[removed_cust]
-                        })
-                        logger.info(f"Removed customer {removed_cust} to improve route feasibility")
-                    
+                        removed = valid_indices_for_api.pop(0)
+                        unserved_customers.append({'id': removed, 'reason': 'Removed for feasibility', 'demand': demands[removed]})
+
                 except Exception as e:
-                    # Handle API errors - remove a customer and retry
-                    logger.error(f"Truck {i} Optimization Error: {e}")
+                    logger.error(f"Cluster {i} Optimization Error: {e}")
                     if valid_indices_for_api:
-                        removed_cust = valid_indices_for_api.pop(0)  # Already sorted by distance
-                        unserved_customers.append({
-                            'id': removed_cust,
-                            'reason': f'Removed due to optimization error: {str(e)}',
-                            'demand': demands[removed_cust]
-                        })
-                        logger.info(f"Removed customer {removed_cust} after optimization error")
+                        removed = valid_indices_for_api.pop(0)
+                        unserved_customers.append({'id': removed, 'reason': f'Removed after error: {e}', 'demand': demands[removed]})
+
+        # --- Selection from Candidate Routes ---
+        final_routes, route_metrics, served_indices = [], [], set()
+        if candidate_routes:
+            # Sort candidates by the number of customers they serve
+            candidate_routes.sort(key=lambda x: len(x['served_indices']), reverse=True)
             
-            # If we exited the loop without finding a valid route, apply fallback to remaining customers
-            if valid_indices_for_api and not route_found:
-                logger.warning(f"Truck {i}: Could not find valid route, applying fallback to {len(valid_indices_for_api)} customers")
-                self._apply_fallback(valid_indices_for_api, final_routes, route_metrics, coords, served_indices)
+            # Select the best routes up to the fleet size limit
+            selected_routes = candidate_routes[:max_vehicles]
+            
+            for r in selected_routes:
+                final_routes.append(r['route'])
+                route_metrics.append(r['metrics'])
+                served_indices.update(r['served_indices'])
+                unserved_customers.extend(r['unserved_in_route'])
+
+            # Add customers from non-selected routes to unserved list
+            served_in_selected = set().union(*(r['served_indices'] for r in selected_routes))
+            for r in candidate_routes:
+                for cust_id in r['served_indices']:
+                    if cust_id not in served_in_selected:
+                        unserved_customers.append({'id': cust_id, 'reason': 'Route not selected due to fleet limit', 'demand': demands[cust_id]})
 
         # Handle unserved customers by creating new routes if we have available vehicles
         remaining_unserved = all_indices - served_indices - {u['id'] for u in unserved_customers}

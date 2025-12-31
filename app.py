@@ -353,6 +353,13 @@ def tab_export():
             
             # Display and export the data
             routes_df = pd.DataFrame(routes_data)
+            
+            # Convert columns with mixed types to object to prevent Arrow serialization errors
+            if 'Route' in routes_df.columns:
+                routes_df['Route'] = routes_df['Route'].astype(object)
+            if 'Stop' in routes_df.columns:
+                routes_df['Stop'] = routes_df['Stop'].astype(object)
+
             st.dataframe(routes_df, width="stretch")
             
             # Add download button
