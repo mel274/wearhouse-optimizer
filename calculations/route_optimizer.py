@@ -20,9 +20,31 @@ class RouteOptimizer:
     def __init__(self, api_key: str):
         self.ors_handler = ors.ORSHandler(api_key)
 
-    def _run_optimization_pipeline(self, locations, demands, coords, customer_coords, 
-                                 customer_demands, params, matrix_data):
-        """Runs the optimization pipeline with the given parameters."""
+    def _run_optimization_pipeline(self, 
+                                 locations: List[str], 
+                                 demands: List[int], 
+                                 coords: List[Tuple[float, float]], 
+                                 customer_coords: List[Tuple[float, float]],
+                                 customer_demands: List[int], 
+                                 params: OptimizationParams, 
+                                 matrix_data: Dict,  # Changed type hint
+                                 fallback_mode: bool = False) -> Solution:
+        """
+        Runs the optimization pipeline with the given parameters.
+        
+        Args:
+            locations: List of location identifiers
+            demands: List of demand values for each location
+            coords: List of (lat, lng) coordinates for all locations
+            customer_coords: List of (lat, lng) coordinates for customer locations only
+            customer_demands: List of demand values for customer locations only
+            params: Optimization parameters including fleet size and capacity
+            matrix_data: Precomputed distance and duration matrices
+            fallback_mode: If True, skips route merging to maximize fleet usage
+            
+        Returns:
+            Solution: The optimized routing solution
+        """
         all_customer_indices = set(range(1, len(locations)))
         
         # --- Phase 1: K-Means Clustering ---
@@ -38,16 +60,21 @@ class RouteOptimizer:
             initial_clusters, matrix_data, demands, params
         )
 
-        # --- Phase 3: Merging ---
-        logger.info("Phase 3: Route Merging...")
-        merged_clusters = merging.merge_routes(
-            refined_clusters, matrix_data, demands, params
-        )
+        # --- Phase 3: Merging (Skipped in fallback mode) ---
+        if fallback_mode:
+            logger.info("Fallback Mode: Skipping Route Merging to maximize fleet usage.")
+            merged_clusters = refined_clusters
+        else:
+            logger.info("Phase 3: Route Merging...")
+            merged_clusters = merging.merge_routes(
+                refined_clusters, matrix_data, demands, params
+            )
 
         # --- Phase 4: Final Optimization (Per Truck) ---
         logger.info("Phase 4: Final Route Optimization...")
         return self._finalize_routes(
-            merged_clusters, coords, demands, params, all_customer_indices
+            merged_clusters, coords, demands, params, 
+            all_customer_indices, prioritize_coverage=fallback_mode
         )
 
     def solve(self, 
@@ -75,12 +102,46 @@ class RouteOptimizer:
             # Initialize tracking of all customer indices (1-based)
             all_customer_indices = set(range(1, len(locations)))
             
-            # Run the optimization pipeline
+            # Run the optimization pipeline - initial pass
             solution = self._run_optimization_pipeline(
-                locations, demands, coords, 
-                customer_coords, customer_demands,
-                params, matrix_data
+                locations=locations,
+                demands=demands,
+                coords=coords,
+                customer_coords=customer_coords,
+                customer_demands=customer_demands,
+                params=params,
+                matrix_data=matrix_data,
+                fallback_mode=False
             )
+            
+            # Check if we have unserved customers and try fallback if needed
+            if solution.get('unserved'):
+                logger.info(f"Initial optimization left {len(solution['unserved'])} unserved customers. "
+                          "Attempting fallback with Max-Coverage mode...")
+                
+                # Run fallback optimization
+                fallback_solution = self._run_optimization_pipeline(
+                    locations=locations,
+                    demands=demands,
+                    coords=coords,
+                    customer_coords=customer_coords,
+                    customer_demands=customer_demands,
+                    params=params,
+                    matrix_data=matrix_data,
+                    fallback_mode=True
+                )
+                
+                # Only use fallback if it serves strictly more customers
+                initial_served = len(locations) - 1 - len(solution.get('unserved', []))
+                fallback_served = len(locations) - 1 - len(fallback_solution.get('unserved', []))
+                
+                if fallback_served > initial_served:
+                    logger.info(f"Fallback successful: Served {fallback_served} customers "
+                              f"(vs {initial_served} in initial solution)")
+                    return fallback_solution
+                else:
+                    logger.info(f"Keeping initial solution: Serves {initial_served} customers "
+                              f"(fallback served {fallback_served})")
             
             return solution
 
@@ -177,7 +238,8 @@ class RouteOptimizer:
                          coords: List[Tuple[float, float]], 
                          demands: List[int],
                          params: OptimizationParams,
-                         all_indices: Set[int]) -> Solution:
+                         all_indices: Set[int],
+                         prioritize_coverage: bool = False) -> Solution:
         """
         Sends each cluster to ORS for detailed path optimization.
         Handles unserved customers by creating new routes when possible.
@@ -192,6 +254,9 @@ class RouteOptimizer:
         matrix_data = self.ors_handler.get_distance_matrix(coords)
         self.max_vehicles = params['fleet_size']
         max_vehicles = self.max_vehicles
+        
+        # Set priority for jobs if in coverage mode
+        job_priority = 100 if prioritize_coverage else 0
 
         for i, cluster in enumerate(clusters):
             indices = cluster['indices']
@@ -234,7 +299,12 @@ class RouteOptimizer:
                         "id": cust_idx,
                         "service": params['service_time_seconds'],
                         "amount": [demands[cust_idx]],
-                        "location": [c_coords[1], c_coords[0]]
+                        "location": [c_coords[1], c_coords[0]],
+                        **(
+                            {"priority": job_priority} 
+                            if prioritize_coverage and job_priority > 0 
+                            else {}
+                        )
                     })
                 
                 # Vehicle setup
