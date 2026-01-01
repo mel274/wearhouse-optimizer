@@ -314,7 +314,7 @@ class RouteOptimizer:
                         route_duration = route_data.get('duration', 0) + (len(valid_indices_for_api) * params['service_time_seconds'])
 
                         if route_duration <= params['max_shift_seconds']:
-                            steps = {step['job'] for step in route_data.get('steps', []) if step['type'] == 'job'}
+                            steps = [step['job'] for step in route_data.get('steps', []) if step['type'] == 'job']
                             polylines = self.ors_handler.get_route_polylines(route_data, warehouse_coord)
                             
                             candidate_routes.append({
@@ -445,7 +445,7 @@ class RouteOptimizer:
                                     'duration': route_duration,
                                     'polylines': polylines
                                 })
-                                newly_served_indices.update(steps)
+                                newly_served_indices.update(route_data.get('steps', []))
                                 logger.info(f"Successfully created and validated new route serving {len(steps)} customers.")
                             else:
                                 # Route is not feasible, customers remain unserved
