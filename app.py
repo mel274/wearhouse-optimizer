@@ -43,9 +43,8 @@ def setup_sidebar():
         return None
     
     st.sidebar.subheader("Fleet Parameters")
-    fleet_size = st.sidebar.slider("Max Fleet Size (Limit)", 1, 50, Config.DEFAULT_FLEET_SIZE, 
+    fleet_size = st.sidebar.slider("Max Fleet Size (12 Big + 6 Small)", 1, 50, Config.DEFAULT_FLEET_SIZE, 
                                  help="The solver will try to use fewer trucks if possible.")
-    truck_capacity = st.sidebar.number_input("Truck Capacity", 100, 10000, Config.DEFAULT_CAPACITY, 100)
     max_shift_hours = st.sidebar.slider("Max Shift (Hours)", 1, 24, Config.MAX_SHIFT_HOURS)
     service_time_minutes = st.sidebar.slider("Service Time (Min)", 5, 60, Config.SERVICE_TIME_MINUTES)
 
@@ -57,7 +56,6 @@ def setup_sidebar():
     return {
         'warehouse_address': warehouse_address,
         'fleet_size': fleet_size,
-        'truck_capacity': truck_capacity,
         'max_shift_hours': max_shift_hours,
         'service_time_minutes': service_time_minutes,
         'data_manager': DataManager(),
@@ -163,7 +161,24 @@ def tab_optimization(services):
         return
         
     estimated_demand = np.ceil(valid_coords[demand_col]).astype(int)
-    
+
+    # --- Auto-calculate capacity based on volume ---
+    total_volume = st.session_state.data['total_volume_m3'].sum()
+    total_quantity = st.session_state.data['total_quantity'].sum()
+
+    if total_quantity > 0:
+        avg_tire_vol = total_volume / total_quantity
+    else:
+        avg_tire_vol = 0.1 # Fallback to prevent division by zero
+
+    big_truck_vol = services['fleet_settings']['big_truck_vol']
+    safety_factor = services['fleet_settings']['safety_factor']
+    calculated_capacity = int((big_truck_vol * safety_factor) / avg_tire_vol) if avg_tire_vol > 0 else 0
+
+    st.info(f"""ℹ️ **Auto-Calculated Capacity:** `{calculated_capacity}` tires/truck
+**Fleet Status:** 18 Trucks Available (12 Big, 6 Small)
+**Calculation Basis:** Big Truck ({big_truck_vol}m³) & Avg Tire Volume ({avg_tire_vol:.4f}m³)""")
+
     if st.button("🚀 Run Auto-Optimization", type="primary"):
         try:
             wh_coords = None
@@ -193,7 +208,7 @@ def tab_optimization(services):
                 
                 params = {
                     'fleet_size': services['fleet_size'],
-                    'capacity': services['truck_capacity'],
+                    'capacity': calculated_capacity, # Use auto-calculated capacity
                     'max_shift_seconds': services['max_shift_hours'] * 3600,
                     'service_time_seconds': services['service_time_minutes'] * 60
                 }
@@ -271,7 +286,7 @@ def tab_optimization(services):
                         dur_str = utils.format_time(r_metrics.get('duration', 0))
                         
                         warnings = []
-                        if current_load > services['truck_capacity']: warnings.append("⚠️ Overloaded")
+                        if current_load > calculated_capacity: warnings.append("⚠️ Overloaded")
                         if r_metrics.get('duration', 0) > params['max_shift_seconds']: warnings.append("⚠️ Overtime")
                         status_str = " ".join(warnings) if warnings else "✅ OK"
                         

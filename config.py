@@ -18,7 +18,7 @@ class Config:
     RADAR_API_KEY = os.getenv('RADAR_API_KEY', '')
     
     # Fleet and operation parameters
-    DEFAULT_FLEET_SIZE = 17
+    DEFAULT_FLEET_SIZE = 18
     DEFAULT_CAPACITY = 400
     MAX_SHIFT_HOURS = 12
     SERVICE_TIME_MINUTES = 15
