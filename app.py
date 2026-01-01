@@ -30,12 +30,14 @@ def setup_sidebar():
     if os.path.exists("michelin-logo-1.png"):
         st.sidebar.image("michelin-logo-1.png", use_container_width=True)
     st.sidebar.header("⚙️ Settings")
+
+    st.sidebar.subheader("Warehouse Location")
+    warehouse_address = st.sidebar.text_input("Manual Warehouse Address", "", help="Enter a full address to override any auto-calculation.")
     
     # Initialize services
     if Config.OPENROUTESERVICE_API_KEY or Config.RADAR_API_KEY:
         if st.session_state.geo_service is None:
             st.session_state.geo_service = GeoService(Config.OPENROUTESERVICE_API_KEY)
-        st.sidebar.success("✅ API Key loaded")
     else:
         st.sidebar.error("⚠️ Missing API Key")
         return None
@@ -51,8 +53,9 @@ def setup_sidebar():
     big_truck_vol = st.sidebar.number_input("Big Truck Volume (m³)", 1.0, 100.0, Config.FLEET_DEFAULTS['big_truck_vol'], 0.5)
     small_truck_vol = st.sidebar.number_input("Small Truck Volume (m³)", 1.0, 100.0, Config.FLEET_DEFAULTS['small_truck_vol'], 0.5)
     safety_factor = st.sidebar.slider("Safety Factor", 0.1, 1.0, Config.FLEET_DEFAULTS['safety_factor'], 0.05)
-    
+
     return {
+        'warehouse_address': warehouse_address,
         'fleet_size': fleet_size,
         'truck_capacity': truck_capacity,
         'max_shift_hours': max_shift_hours,
@@ -112,23 +115,31 @@ def tab_data_upload(services):
                     col1.metric("Total Volume (m³)", f"{total_volume:.2f}")
                     col2.metric("Estimated Trucks Needed", f"{total_trucks}")
 
-                    cog = services['data_manager'].calculate_center_of_gravity(st.session_state.data)
-                    
-                    if cog['lat'] and st.session_state.geo_service:
-                        raw_coords = (cog['lat'], cog['lng'])
-                        snapped_coords = st.session_state.geo_service.snap_to_road(raw_coords)
-                        
-                        if snapped_coords != raw_coords:
-                            cog['lat'], cog['lng'] = snapped_coords
-                            st.info(f"ℹ️ Warehouse Auto-Snapped to nearest road: {snapped_coords}")
+                    # Optional COG Calculation
+                    calculate_cog = st.toggle("Auto-Calculate Warehouse Location (COG)", value=False, help="If enabled, calculates the geographic center of all customers to suggest a warehouse location.")
 
-                    st.session_state.warehouse_coords = (cog['lat'], cog['lng'])
-                    
-                    # Show the warehouse and customer locations on the map
-                    if cog['lat'] is not None:
-                        st.subheader("🗺️ Customer & Warehouse Map")
-                        phase1_map = services['map_builder'].create_phase1_map(st.session_state.data, cog)
-                        st.components.v1.html(phase1_map._repr_html_(), height=600)
+                    if calculate_cog:
+                        with st.spinner("Calculating Center of Gravity..."):
+                            cog = services['data_manager'].calculate_center_of_gravity(st.session_state.data)
+                            
+                            if cog['lat'] and st.session_state.geo_service:
+                                raw_coords = (cog['lat'], cog['lng'])
+                                snapped_coords = st.session_state.geo_service.snap_to_road(raw_coords)
+                                
+                                if snapped_coords != raw_coords:
+                                    cog['lat'], cog['lng'] = snapped_coords
+                                    st.info(f"ℹ️ Warehouse Auto-Snapped to nearest road: {snapped_coords}")
+
+                            st.session_state.warehouse_coords = (cog['lat'], cog['lng'])
+                            
+                            # Show the warehouse and customer locations on the map
+                            if cog['lat'] is not None:
+                                st.subheader("🗺️ Customer & Warehouse Map")
+                                phase1_map = services['map_builder'].create_phase1_map(st.session_state.data, cog)
+                                st.components.v1.html(phase1_map._repr_html_(), height=600)
+                    else:
+                        # Ensure warehouse_coords are reset if COG is not calculated
+                        st.session_state.warehouse_coords = None
                 
         except Exception as e:
             st.error(f"Error: {str(e)}")
@@ -145,17 +156,7 @@ def tab_optimization(services):
         st.error("No geocoded data.")
         return
     
-    # Use the snapped coords from Tab 1, or recalculate if missing
-    if st.session_state.warehouse_coords:
-        default_wh = f"{st.session_state.warehouse_coords[0]:.6f}, {st.session_state.warehouse_coords[1]:.6f}"
-    else:
-        cog = services['data_manager'].calculate_center_of_gravity(valid_coords)
-        default_wh = f"{cog['lat']:.6f}, {cog['lng']:.6f}" if cog['lat'] else ""
-
-    warehouse_address = st.text_input("Warehouse Location (Snapped)", value=default_wh, help="This is the starting point for all trucks.")
-    
     demand_col = 'avg_quantity'
-    st.info("Using average quantity for route planning.")
     
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
@@ -163,19 +164,30 @@ def tab_optimization(services):
         
     estimated_demand = np.ceil(valid_coords[demand_col]).astype(int)
     
-    st.info(f"ℹ️ **Strategy:** \n1. **K-Means**: Initial Grouping.\n2. **Matrix Refinement**: Swap customers to correct routes.\n3. **Route Merging**: Combine routes to save stem kilometers.\n4. **Optimization**: Final detailed routing (ORS).")
-    
     if st.button("🚀 Run Auto-Optimization", type="primary"):
         try:
+            wh_coords = None
+            manual_warehouse_address = services.get('warehouse_address')
+
+            # Prioritize manual address
+            if manual_warehouse_address:
+                with st.spinner(f"Geocoding manual address: '{manual_warehouse_address}'..."):
+                    wh_coords = st.session_state.geo_service.get_coordinates(manual_warehouse_address)
+                    if not wh_coords:
+                        st.error(f"Could not geocode address: '{manual_warehouse_address}'. Please check the address or try another.")
+                        return # Stop execution
+            # Fallback to COG-calculated coordinates
+            elif st.session_state.warehouse_coords:
+                wh_coords = st.session_state.warehouse_coords
+            
+            # If no warehouse location is determined, stop.
+            if not wh_coords:
+                st.error("A warehouse location is required. Please enter an address or enable auto-calculation in the Data Upload tab.")
+                return
+
+            st.session_state.warehouse_coords = wh_coords
+
             with st.spinner("Running Optimization Stages..."):
-                # Parse Warehouse Coords
-                if ',' in warehouse_address:
-                    try: wh_coords = tuple(map(float, warehouse_address.split(',')))
-                    except: wh_coords = st.session_state.geo_service.get_coordinates(warehouse_address)
-                else: wh_coords = st.session_state.geo_service.get_coordinates(warehouse_address)
-                
-                st.session_state.warehouse_coords = wh_coords
-                
                 matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
                 demands = [0] + estimated_demand.tolist()
                 
