@@ -36,6 +36,21 @@ class Config:
     ROUTE_INFLUENCE_RADIUS = 2000  # meters
     DEFAULT_CENTER_LAT = 31.7683  # Jerusalem
     DEFAULT_CENTER_LNG = 35.2137
+
+    # Geographic restriction zones
+    GUSH_DAN_BOUNDS = {
+        'min_lat': 32.02,
+        'max_lat': 32.15,
+        'min_lon': 34.74,
+        'max_lon': 34.85
+    }
+
+    # Fleet defaults for volume-based calculations
+    FLEET_DEFAULTS = {
+        'big_truck_vol': 32.0,
+        'small_truck_vol': 27.0,
+        'safety_factor': 0.7
+    }
     
     # API and caching parameters
     API_TIMEOUT = 30 # Increased timeout for robustness

@@ -7,6 +7,7 @@ import utils
 from data_manager import DataManager
 from geo_service import GeoService
 from calculations.route_optimizer import RouteOptimizer
+from calculations.logistics import calculate_fleet_metrics
 from visualizer import MapBuilder
 from session_manager import SessionManager
 from exceptions import WarehouseOptimizerError, DataValidationError, GeocodingError, OptimizationError
@@ -45,6 +46,11 @@ def setup_sidebar():
     truck_capacity = st.sidebar.number_input("Truck Capacity", 100, 10000, Config.DEFAULT_CAPACITY, 100)
     max_shift_hours = st.sidebar.slider("Max Shift (Hours)", 1, 24, Config.MAX_SHIFT_HOURS)
     service_time_minutes = st.sidebar.slider("Service Time (Min)", 5, 60, Config.SERVICE_TIME_MINUTES)
+
+    st.sidebar.subheader("Volume & Logistics")
+    big_truck_vol = st.sidebar.number_input("Big Truck Volume (m³)", 1.0, 100.0, Config.FLEET_DEFAULTS['big_truck_vol'], 0.5)
+    small_truck_vol = st.sidebar.number_input("Small Truck Volume (m³)", 1.0, 100.0, Config.FLEET_DEFAULTS['small_truck_vol'], 0.5)
+    safety_factor = st.sidebar.slider("Safety Factor", 0.1, 1.0, Config.FLEET_DEFAULTS['safety_factor'], 0.05)
     
     return {
         'fleet_size': fleet_size,
@@ -53,7 +59,12 @@ def setup_sidebar():
         'service_time_minutes': service_time_minutes,
         'data_manager': DataManager(),
         'map_builder': MapBuilder(),
-        'route_optimizer': RouteOptimizer(Config.OPENROUTESERVICE_API_KEY)
+        'route_optimizer': RouteOptimizer(Config.OPENROUTESERVICE_API_KEY),
+        'fleet_settings': {
+            'big_truck_vol': big_truck_vol,
+            'small_truck_vol': small_truck_vol,
+            'safety_factor': safety_factor
+        }
     }
 
 def tab_data_upload(services):
@@ -84,7 +95,23 @@ def tab_data_upload(services):
                         st.rerun()
 
                 if geocoded_count > 0:
-                    st.subheader("📈 Center of Gravity Analysis")
+                    # --- NEW: Logistics Calculations ---
+                    with st.spinner("Calculating fleet logistics..."):
+                        st.session_state.data = calculate_fleet_metrics(
+                            st.session_state.data, 
+                            services['fleet_settings']
+                        )
+
+                    st.subheader("📈 Center of Gravity & Logistics Analysis")
+                    
+                    # Display Metrics
+                    total_volume = st.session_state.data['total_volume_m3'].sum()
+                    total_trucks = st.session_state.data['trucks_needed'].sum()
+                    
+                    col1, col2 = st.columns(2)
+                    col1.metric("Total Volume (m³)", f"{total_volume:.2f}")
+                    col2.metric("Estimated Trucks Needed", f"{total_trucks}")
+
                     cog = services['data_manager'].calculate_center_of_gravity(st.session_state.data)
                     
                     if cog['lat'] and st.session_state.geo_service:

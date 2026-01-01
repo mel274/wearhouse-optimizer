@@ -68,13 +68,15 @@ class MapBuilder:
                     </div>
                     """
                     
+                    marker_color = row.get('color', 'blue') # Default to blue if no color column
+
                     folium.CircleMarker(
                         location=[row['lat'], row['lng']],
                         radius=radius,
                         popup=folium.Popup(popup_html, max_width=300),
-                        color='blue',
+                        color=marker_color,
                         fill=True,
-                        fillColor='blue',
+                        fillColor=marker_color,
                         fillOpacity=0.8,
                         weight=1
                     ).add_to(m)

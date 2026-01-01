@@ -71,6 +71,25 @@ class DataManager:
         # Convert quantity to numeric
         if 'כמות' in df.columns:
             df['כמות'] = pd.to_numeric(df['כמות'], errors='coerce').fillna(0)
+
+        # --- NEW: Volume Calculation ---
+        volume_col_hebrew = 'נפח פריט (ליטרים)'
+        volume_col_english = 'volume_cbm'
+
+        volume_col = None
+        if volume_col_hebrew in df.columns:
+            volume_col = volume_col_hebrew
+        elif volume_col_english in df.columns:
+            volume_col = volume_col_english
+
+        if volume_col:
+            logger.info(f"Volume column '{volume_col}' found. Calculating total volume.")
+            df[volume_col] = pd.to_numeric(df[volume_col], errors='coerce').fillna(0)
+            # Convert Liters to Cubic Meters (1 L = 0.001 m^3)
+            df['total_volume_m3'] = (df[volume_col] * df['כמות']) / 1000
+        else:
+            logger.warning(f"No volume column found ('{volume_col_hebrew}' or '{volume_col_english}'). Defaulting total volume to 0.")
+            df['total_volume_m3'] = 0
         
         # Strip whitespace from string columns
         string_columns = ['כתובת', 'מס\' לקוח', 'שם לקוח', 'שם קו']
@@ -93,12 +112,17 @@ class DataManager:
             if missing_group_cols:
                 raise ValueError(f"Missing group columns: {missing_group_cols}")
             
-            # Perform aggregation
-            aggregated = df.groupby(group_cols, as_index=False).agg({
-                'תאריך אספקה': 'nunique',  # Count distinct dates = num_visits
-                'כמות': 'sum',            # Sum quantities
+            # Define aggregation operations
+            agg_ops = {
+                'תאריך אספקה': 'nunique',
+                'כמות': 'sum',
                 'שם קו': lambda x: x.mode().iloc[0] if not x.mode().empty else ''
-            })
+            }
+            if 'total_volume_m3' in df.columns:
+                agg_ops['total_volume_m3'] = 'sum'
+
+            # Perform aggregation
+            aggregated = df.groupby(group_cols, as_index=False).agg(agg_ops)
             
             # Rename columns
             aggregated = aggregated.rename(columns={
