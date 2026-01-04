@@ -73,7 +73,7 @@ class DataManager:
             df['כמות'] = pd.to_numeric(df['כמות'], errors='coerce').fillna(0)
 
         # --- NEW: Volume Calculation ---
-        volume_col_hebrew = 'נפח פריט (ליטרים)'
+        volume_col_hebrew = 'נפח פריט (מטר מעוקב)'
         volume_col_english = 'volume_cbm'
 
         volume_col = None
