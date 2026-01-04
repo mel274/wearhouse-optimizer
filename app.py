@@ -169,11 +169,11 @@ def tab_optimization(services):
     if total_quantity > 0:
         avg_tire_vol = total_volume / total_quantity
     else:
-        avg_tire_vol = 0.1 # Fallback to prevent division by zero
+        avg_tire_vol = 0.00001 # Fallback to prevent division by zero
 
     big_truck_vol = services['fleet_settings']['big_truck_vol']
     safety_factor = services['fleet_settings']['safety_factor']
-    calculated_capacity = int((big_truck_vol * safety_factor) / avg_tire_vol) if avg_tire_vol > 0 else 0
+    calculated_capacity = int((big_truck_vol * safety_factor) / avg_tire_vol) if avg_tire_vol > 0.00001 else 0
 
     st.info(f"""ℹ️ **Auto-Calculated Capacity:** `{calculated_capacity}` tires/truck
 **Fleet Status:** 18 Trucks Available (12 Big, 6 Small)
