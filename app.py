@@ -431,15 +431,126 @@ def tab_export():
     else:
         st.warning("No solution to export.")
 
+def tab_compare_actuals(services):
+    st.header("📊 Performance Comparison")
+
+    if not st.session_state.solution or not st.session_state.solution.get('solution_found'):
+        st.warning("Please run an optimization first before comparing results.")
+        return
+
+    st.subheader("Upload Actuals Report")
+    actuals_file = st.file_uploader("Upload your historical data (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
+
+    if actuals_file:
+        try:
+            # Load the file
+            df_actuals = pd.read_csv(actuals_file) if actuals_file.name.endswith('.csv') else pd.read_excel(actuals_file)
+            
+            # Define Hebrew to English column mapping
+            hebrew_to_english = {
+                'טווח תאריכים': 'Date Range',
+                'שם קו': 'Line Name',
+                'סהכ קמ': 'Total KM',
+                'סהכ זמן נסיעה': 'Total Driving Time'
+            }
+            
+            # Check for required Hebrew columns
+            required_hebrew_cols = list(hebrew_to_english.keys())
+            if not all(col in df_actuals.columns for col in required_hebrew_cols):
+                st.error(f"Invalid file format. Please ensure the file contains the columns: {', '.join(required_hebrew_cols)}")
+                return
+                
+            # Rename columns to English for processing
+            df_actuals = df_actuals.rename(columns=hebrew_to_english)
+
+            st.success("Actuals report uploaded successfully.")
+
+            # --- 1. Data Processing Logic ---
+            # Parse Date Range
+            try:
+                date_range_str = df_actuals['Date Range'].iloc[0]
+                start_date_str, end_date_str = date_range_str.split('-')
+                # Using dayfirst=True to correctly parse DD/MM/YYYY
+                start_date = pd.to_datetime(start_date_str, dayfirst=True)
+                end_date = pd.to_datetime(end_date_str, dayfirst=True)
+                num_days = (end_date - start_date).days + 1
+            except Exception as date_e:
+                st.error(f"Could not parse the 'Date Range' column. Please ensure it is in 'DD/MM/YYYY-DD/MM/YYYY' format. Error: {date_e}")
+                return
+
+            # --- 2. Aggregate Actuals ---
+            actual_total_km = df_actuals['Total KM'].sum()
+            actual_total_hours = df_actuals['Total Driving Time'].sum()
+            actual_trucks_used = df_actuals['Line Name'].nunique()
+
+            # --- 3. Aggregate Optimized Results (Projected) ---
+            optimized_metrics = st.session_state.solution['metrics']
+            service_time_per_stop_hours = services['service_time_minutes'] / 60
+            total_stops = sum(len(r) - 2 for r in st.session_state.solution['routes'])
+            
+            # Calculate total driving time (from optimizer) and add total service time
+            optimized_driving_hours_single_day = optimized_metrics.get('total_time', 0) / 3600
+            optimized_service_time_single_day = total_stops * service_time_per_stop_hours
+            optimized_total_hours_single_day = optimized_driving_hours_single_day + optimized_service_time_single_day
+
+            # Project results over the period
+            projected_optimized_km = (optimized_metrics.get('total_distance', 0) / 1000) * num_days
+            projected_optimized_hours = optimized_total_hours_single_day * num_days
+            optimized_trucks_used = optimized_metrics.get('num_vehicles_used', 0)
+
+            st.info(f"Comparing actuals from **{start_date.strftime('%d %b %Y')}** to **{end_date.strftime('%d %b %Y')}** ({num_days} days) against projected optimization results.")
+
+            # --- 4. Visualization ---
+            st.subheader("💰 Savings Scorecard")
+            mileage_savings = actual_total_km - projected_optimized_km
+            hours_savings = actual_total_hours - projected_optimized_hours
+            trucks_savings = actual_trucks_used - optimized_trucks_used
+
+            mileage_savings_percent = (mileage_savings / actual_total_km) * 100 if actual_total_km > 0 else 0
+            hours_savings_percent = (hours_savings / actual_total_hours) * 100 if actual_total_hours > 0 else 0
+
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Mileage Saved", f"{mileage_savings:,.1f} km", f"{mileage_savings_percent:.1f}%", delta_color="inverse")
+            col2.metric("Hours Saved", f"{hours_savings:,.1f} hrs", f"{hours_savings_percent:.1f}%", delta_color="inverse")
+            col3.metric("Fleet Reduction", f"{trucks_savings} Trucks", delta_color="inverse")
+
+            # --- Charts ---
+            st.subheader("📊 Visual Comparison")
+            chart_data = pd.DataFrame({
+                'Category': ['Actual', 'Optimized'],
+                'Total KM': [actual_total_km, projected_optimized_km],
+                'Total Hours': [actual_total_hours, projected_optimized_hours]
+            })
+
+            col1, col2 = st.columns(2)
+            with col1:
+                st.bar_chart(chart_data.set_index('Category')['Total KM'], use_container_width=True)
+            with col2:
+                st.bar_chart(chart_data.set_index('Category')['Total Hours'], use_container_width=True)
+
+            # --- Data Table ---
+            st.subheader("📋 Summary Table")
+            summary_df = pd.DataFrame({
+                'Metric': ['Total Mileage (km)', 'Total Driving Hours', 'Asset Utilization (Trucks)'],
+                'Actual': [f"{actual_total_km:,.1f}", f"{actual_total_hours:,.1f}", actual_trucks_used],
+                'Optimized': [f"{projected_optimized_km:,.1f}", f"{projected_optimized_hours:,.1f}", optimized_trucks_used]
+            })
+            st.table(summary_df.set_index('Metric'))
+
+        except Exception as e:
+            st.error(f"Error reading or processing the actuals file: {e}")
+            return
+
 def main():
     st.set_page_config(layout="wide", page_title="Warehouse Optimizer", page_icon="🚛")
     init_session_state()
     services = setup_sidebar()
     st.title("🏭 Warehouse Location & Route Optimizer")
-    tab1, tab2, tab3 = st.tabs(["1. Data Upload", "2. Optimization", "3. Export"])
+    tab1, tab2, tab3, tab4 = st.tabs(["1. Data Upload", "2. Optimization", "3. Export", "4. Compare vs. Actuals"]) 
     with tab1: tab_data_upload(services)
     with tab2: tab_optimization(services)
     with tab3: tab_export()
+    with tab4: tab_compare_actuals(services)
 
 if __name__ == "__main__":
     main()
