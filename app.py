@@ -169,7 +169,7 @@ def tab_optimization(services):
     if total_quantity > 0:
         avg_tire_vol = total_volume / total_quantity
     else:
-        avg_tire_vol = 0.1 # Fallback to prevent division by zero
+        avg_tire_vol = 0.00001 # Fallback to prevent division by zero
 
     big_truck_vol = services['fleet_settings']['big_truck_vol']
     safety_factor = services['fleet_settings']['safety_factor']
