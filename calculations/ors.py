@@ -9,7 +9,8 @@ from typing import List, Dict, Any, Tuple, Optional, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from .types import MatrixData, Coords, RouteMetrics
-from .utils import retry_with_backoff, decode_polyline
+from .utils import decode_polyline
+from utils import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
