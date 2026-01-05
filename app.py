@@ -12,16 +12,16 @@ logger = logging.getLogger(__name__)
 
 def main() -> None:
     """Main application entry point."""
-    st.set_page_config(layout="wide", page_title="Warehouse Optimizer", page_icon="🚛")
+    st.set_page_config(layout="wide", page_title="Warehouse Optimizer")
     init_session_state()
     services = setup_sidebar()
-    st.title("🏭 Warehouse Location & Route Optimizer")
+    st.title("Warehouse Location & Route Optimizer")
 
     tab1, tab2, tab3, tab4 = st.tabs([
-        "1. Data Upload",
-        "2. Optimization",
-        "3. Export",
-        "4. Compare vs. Actuals"
+        "Data Upload",
+        "Optimization",
+        "Comparison",
+        "Export"
     ])
 
     with tab1:
@@ -29,9 +29,9 @@ def main() -> None:
     with tab2:
         tab_optimization(services)
     with tab3:
-        tab_export()
-    with tab4:
         tab_compare_actuals(services)
+    with tab4:
+        tab_export()
 
 
 if __name__ == "__main__":

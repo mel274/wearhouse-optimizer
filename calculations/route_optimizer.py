@@ -10,6 +10,7 @@ from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from .types import Solution, OptimizationParams, UnservedCustomer
 from . import ors, metrics, utils
+from config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,30 @@ class RouteOptimizer:
     def __init__(self, api_key: str):
         self.ors_handler = ors.ORSHandler(api_key)
 
-    def solve(self, 
+    def _identify_gush_dan_customers(self, coords: List[Tuple[float, float]]) -> Set[int]:
+        """
+        Identify customer nodes that fall within Gush Dan bounds.
+        Node 0 is the depot, so we skip it.
+        
+        Returns:
+            Set of node indices (excluding depot) that are in Gush Dan
+        """
+        gush_dan_indices = set()
+        bounds = Config.GUSH_DAN_BOUNDS
+        
+        for node_idx, (lat, lng) in enumerate(coords):
+            # Skip depot (node 0)
+            if node_idx == 0:
+                continue
+            
+            # Check if coordinates fall within Gush Dan bounds
+            if (bounds['min_lat'] <= lat <= bounds['max_lat'] and
+                bounds['min_lon'] <= lng <= bounds['max_lon']):
+                gush_dan_indices.add(node_idx)
+        
+        return gush_dan_indices
+
+    def solve(self,
               locations: List[str], 
               demands: List[int], 
               params: OptimizationParams, 
@@ -40,15 +64,36 @@ class RouteOptimizer:
             logger.info("Phase 0: Fetching Distance Matrix (with caching)...")
             matrix_data = self.ors_handler.get_distance_matrix(coords)
             
+            # --- Phase 0.5: Identify Gush Dan Customers ---
+            gush_dan_node_indices = self._identify_gush_dan_customers(coords)
+            logger.info(f"Identified {len(gush_dan_node_indices)} Gush Dan customers (must use Small Trucks)")
+            
+            # --- Phase 0.6: Setup Heterogeneous Fleet ---
+            num_small_trucks = params.get('num_small_trucks', 6)
+            num_big_trucks = params.get('num_big_trucks', 12)
+            small_capacity = params.get('small_capacity', params.get('capacity', 0))
+            big_capacity = params.get('big_capacity', params.get('capacity', 0))
+            
+            # Construct vehicle capacities list: first num_small_trucks are Small, rest are Big
+            vehicle_capacities = [small_capacity] * num_small_trucks + [big_capacity] * num_big_trucks
+            total_fleet_size = len(vehicle_capacities)
+            
+            # Track which vehicle indices are Small Trucks (0 to num_small_trucks-1)
+            small_truck_vehicle_indices = list(range(num_small_trucks))
+            
+            logger.info(f"Fleet composition: {num_small_trucks} Small Trucks (capacity={small_capacity}), {num_big_trucks} Big Trucks (capacity={big_capacity})")
+            
             # Build data model for OR-Tools
             data = {
                 'distance_matrix': matrix_data['distances'],
                 'time_matrix': matrix_data['durations'],
                 'demands': demands,  # Node 0 is warehouse with demand 0
-                'vehicle_capacities': [params['capacity']] * params['fleet_size'],
-                'num_vehicles': params['fleet_size'],
+                'vehicle_capacities': vehicle_capacities,
+                'num_vehicles': total_fleet_size,
                 'depot': 0,
-                'max_shift_seconds': params['max_shift_seconds']
+                'max_shift_seconds': params['max_shift_seconds'],
+                'gush_dan_node_indices': gush_dan_node_indices,
+                'small_truck_vehicle_indices': small_truck_vehicle_indices
             }
             
             # Solve with OR-Tools
@@ -181,6 +226,17 @@ class RouteOptimizer:
         for node in range(1, num_nodes):  # Skip depot (node 0)
             routing.AddDisjunction([manager.NodeToIndex(node)], penalty_value)
         
+        # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
+        gush_dan_node_indices = data.get('gush_dan_node_indices', set())
+        small_truck_vehicle_indices = data.get('small_truck_vehicle_indices', [])
+        
+        if gush_dan_node_indices and small_truck_vehicle_indices:
+            logger.info(f"Applying Gush Dan constraints: {len(gush_dan_node_indices)} customers restricted to Small Trucks")
+            for gush_dan_node in gush_dan_node_indices:
+                node_index = manager.NodeToIndex(gush_dan_node)
+                # Restrict this node to only be assigned to Small Truck vehicles
+                routing.VehicleVar(node_index).SetValues(small_truck_vehicle_indices)
+        
         # Set search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
@@ -247,6 +303,9 @@ class RouteOptimizer:
         route_metrics = []
         served_indices = set()
         
+        # Determine truck type based on vehicle index
+        num_small_trucks = len(data.get('small_truck_vehicle_indices', []))
+        
         # Extract routes for each vehicle
         for vehicle_id in range(data['num_vehicles']):
             route_nodes = []
@@ -263,7 +322,9 @@ class RouteOptimizer:
             if route_nodes:
                 # Build full route: depot -> customers -> depot
                 full_route = [data['depot']] + route_nodes + [data['depot']]
-                routes.append(full_route)
+                
+                # Determine vehicle type: first num_small_trucks are Small, rest are Big
+                vehicle_type = "Small" if vehicle_id < num_small_trucks else "Big"
                 
                 # Get route coordinates for directions API
                 route_coords = [coords[node] for node in full_route]
@@ -282,10 +343,14 @@ class RouteOptimizer:
                     # Format polylines for frontend (list of coordinate lists)
                     polylines = [geometry] if geometry else []
                     
+                    # Store route as list (for backward compatibility) and add vehicle_type to metrics
+                    routes.append(full_route)
                     route_metrics.append({
                         'distance': distance,
                         'duration': duration,
-                        'polylines': polylines
+                        'polylines': polylines,
+                        'vehicle_type': vehicle_type,
+                        'vehicle_id': vehicle_id
                     })
                 except Exception as e:
                     logger.warning(f"Failed to get directions for vehicle {vehicle_id}: {e}. Using matrix estimates.")
@@ -304,17 +369,22 @@ class RouteOptimizer:
                     route_metrics.append({
                         'distance': total_distance,
                         'duration': total_duration,
-                        'polylines': []  # No geometry available
+                        'polylines': [],  # No geometry available
+                        'vehicle_type': vehicle_type,
+                        'vehicle_id': vehicle_id
                     })
         
         # Identify unserved customers
         all_customer_indices = set(range(1, len(locations)))
         unserved_indices = all_customer_indices - served_indices
         
+        # Get maximum capacity (big truck capacity) for validation
+        max_capacity = max(data['vehicle_capacities']) if data['vehicle_capacities'] else params.get('big_capacity', params.get('capacity', 0))
+        
         unserved_customers = []
         for idx in unserved_indices:
-            # Check if demand exceeds capacity
-            if data['demands'][idx] > params['capacity']:
+            # Check if demand exceeds maximum capacity
+            if data['demands'][idx] > max_capacity:
                 reason = 'Demand exceeds vehicle capacity'
             else:
                 reason = 'Not assigned to any route'
@@ -328,7 +398,7 @@ class RouteOptimizer:
         # Optional heuristic retry for remaining unserved customers
         if unserved_customers and len(routes) < data['num_vehicles']:
             logger.info(f"Attempting heuristic fallback for {len(unserved_customers)} unserved customers")
-            remaining_unserved = [u['id'] for u in unserved_customers if u['demand'] <= params['capacity']]
+            remaining_unserved = [u['id'] for u in unserved_customers if u['demand'] <= max_capacity]
             
             if remaining_unserved:
                 # Try to create additional routes using geometric fallback
@@ -480,11 +550,12 @@ class RouteOptimizer:
         unserved_demands = [u['demand'] for u in unserved_customers]
         total_unserved_demand = sum(unserved_demands)
         
-        # Check capacity constraints
-        if any(d > params['capacity'] for d in unserved_demands):
+        # Check capacity constraints - use maximum capacity (big truck)
+        max_capacity = params.get('big_capacity', params.get('capacity', 0))
+        if any(d > max_capacity for d in unserved_demands):
             oversize_customers = [
                 u for u in unserved_customers 
-                if u['demand'] > params['capacity']
+                if u['demand'] > max_capacity
             ]
             suggestions.append({
                 'type': 'capacity_issue',
@@ -492,18 +563,20 @@ class RouteOptimizer:
                 'details': [{
                     'customer_id': u['id'],
                     'demand': u['demand'],
-                    'vehicle_capacity': params['capacity']
+                    'vehicle_capacity': max_capacity
                 } for u in oversize_customers],
                 'suggestion': 'Consider using vehicles with higher capacity or splitting orders'
             })
 
         # Check time constraints
-        max_possible_routes = params['fleet_size']
+        max_possible_routes = params.get('fleet_size', 18)
         if len(unserved_customers) > 0 and len(unserved_customers) <= max_possible_routes:
+            # Estimate current routes used (we don't have exact count here, use fleet_size as proxy)
+            current_routes_estimate = max_possible_routes  # Conservative estimate
             suggestions.append({
                 'type': 'fleet_adjustment',
                 'message': f'Adding {len(unserved_customers)} more routes could serve all customers',
-                'suggestion': f"Increase fleet size to {len(unserved_customers) + len(final_routes) if 'final_routes' in locals() else '?'} vehicles"
+                'suggestion': f"Consider increasing fleet size or adjusting constraints to accommodate {len(unserved_customers)} additional customers"
             })
 
         # Calculate required time adjustments

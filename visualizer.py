@@ -22,14 +22,19 @@ class MapBuilder:
                       'darkred', 'lightred', 'beige', 'darkblue', 'darkgreen',
                       'cadetblue', 'pink', 'gray', 'black']
     
-    def create_phase1_map(self, df: pd.DataFrame, cog: Dict[str, float]) -> folium.Map:
+    def create_phase1_map(self, df: pd.DataFrame, cog: Optional[Dict[str, float]]) -> folium.Map:
         """
-        Create Phase 1 map showing customers and center of gravity.
+        Create Phase 1 map showing customers and warehouse location (if provided).
         Customers are shown as small fixed dots.
+        
+        Args:
+            df: DataFrame with customer data including lat/lng columns
+            cog: Optional dictionary with 'lat' and 'lng' keys for warehouse location.
+                 If None, no warehouse marker will be displayed.
         """
         try:
-            # Center map on center of gravity or first customer
-            if cog['lat'] and cog['lng']:
+            # Center map on warehouse or first customer
+            if cog is not None and cog.get('lat') is not None and cog.get('lng') is not None:
                 center_lat, center_lng = cog['lat'], cog['lng']
             else:
                 # Fallback to first customer with valid coordinates
@@ -47,11 +52,11 @@ class MapBuilder:
                 tiles='OpenStreetMap'
             )
             
-            # Add center of gravity marker
-            if cog['lat'] and cog['lng']:
+            # Add warehouse marker only if coordinates are provided
+            if cog is not None and cog.get('lat') is not None and cog.get('lng') is not None:
                 folium.Marker(
                     location=[cog['lat'], cog['lng']],
-                    popup='<div>Center of Gravity</div>',
+                    popup='<div>Warehouse Location</div>',
                     icon=folium.Icon(color='red', icon='star', prefix='fa')
                 ).add_to(m)
             

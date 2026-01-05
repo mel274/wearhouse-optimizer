@@ -22,6 +22,10 @@ DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_READ_TIMEOUT = 120  # Increased from 30 to 120 seconds
 MAX_RETRIES = 3
 
+# Matrix API chunk size - ORS API limit is ~50 locations per request
+# Using 40 to stay safely under the limit
+MATRIX_CHUNK_SIZE = 40
+
 def _compute_matrix_cache_key(locations: List[Coords]) -> str:
     """Compute a stable hash key for the given coordinates."""
     # Create a stable representation of coordinates
@@ -69,14 +73,17 @@ class ORSHandler:
     @retry_with_backoff(max_attempts=3)
     def get_distance_matrix(self, locations: List[Coords], timeout: Optional[Union[float, Tuple[float, float]]] = None) -> MatrixData:
         """
-        Fetch distance and duration matrix with enhanced error handling and disk caching.
+        Fetch distance and duration matrix with enhanced error handling, disk caching, and batching.
+        
+        For large location sets (>40), this method automatically batches requests into smaller chunks
+        to avoid API limits, then reassembles the full matrix.
         
         Args:
             locations: List of (lat, lng) coordinates
             timeout: Optional timeout in seconds (can be tuple of (connect_timeout, read_timeout))
             
         Returns:
-            Dictionary containing 'durations' and 'distances' matrices
+            Dictionary containing 'durations' and 'distances' matrices (N x N)
             
         Raises:
             ValueError: If API key is missing or locations list is empty
@@ -88,7 +95,9 @@ class ORSHandler:
         if not locations:
             raise ValueError("At least one location is required.")
         
-        # Check cache first
+        num_locations = len(locations)
+        
+        # Check cache first (cache key is based on all locations)
         cache_key = _compute_matrix_cache_key(locations)
         cache_dir = Path(".cache/matrices")
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -99,16 +108,26 @@ class ORSHandler:
                 logger.info(f"Loading distance matrix from cache: {cache_file}")
                 with open(cache_file, 'rb') as f:
                     cached_data = pickle.load(f)
-                logger.info(f"Successfully loaded cached matrix for {len(locations)} locations")
+                logger.info(f"Successfully loaded cached matrix for {num_locations} locations")
                 return cached_data
             except Exception as e:
                 logger.warning(f"Failed to load cache file {cache_file}: {e}. Fetching from API.")
         
-        logger.info(f"Fetching distance matrix for {len(locations)} locations")
-        
         # Use instance timeout if not specified
         timeout = timeout or self.timeout
         
+        # If locations count is small enough, use direct API call (faster)
+        if num_locations <= MATRIX_CHUNK_SIZE:
+            logger.info(f"Fetching distance matrix for {num_locations} locations (single request)")
+            return self._fetch_matrix_direct(locations, timeout, cache_file)
+        
+        # For large location sets, use batched approach
+        logger.info(f"Fetching distance matrix for {num_locations} locations (batched into chunks of {MATRIX_CHUNK_SIZE})")
+        return self._fetch_matrix_batched(locations, timeout, cache_file)
+    
+    def _fetch_matrix_direct(self, locations: List[Coords], timeout: Tuple[float, float], 
+                            cache_file: Path) -> MatrixData:
+        """Fetch matrix directly for small location sets (<= MATRIX_CHUNK_SIZE)."""
         try:
             # ORS expects [lon, lat]
             formatted_locations = [[loc[1], loc[0]] for loc in locations]
@@ -153,6 +172,102 @@ class ORSHandler:
         except requests.exceptions.RequestException as e:
             logger.error(f"Request failed: {str(e)}")
             raise
+    
+    def _fetch_matrix_batched(self, locations: List[Coords], timeout: Tuple[float, float],
+                             cache_file: Path) -> MatrixData:
+        """
+        Fetch matrix using batched requests for large location sets.
+        
+        Breaks the request into chunks of MATRIX_CHUNK_SIZE and reassembles the full matrix.
+        """
+        num_locations = len(locations)
+        
+        # Step 1: Create full-sized matrices (N x N) initialized with zeros
+        durations_matrix = [[0.0] * num_locations for _ in range(num_locations)]
+        distances_matrix = [[0.0] * num_locations for _ in range(num_locations)]
+        
+        # Step 2: Loop through source chunks
+        url = "https://api.openrouteservice.org/v2/matrix/driving-car"
+        headers = {
+            'Authorization': self.api_key,
+            'Content-Type': 'application/json'
+        }
+        
+        total_chunks = ((num_locations + MATRIX_CHUNK_SIZE - 1) // MATRIX_CHUNK_SIZE) ** 2
+        chunk_count = 0
+        
+        for source_start in range(0, num_locations, MATRIX_CHUNK_SIZE):
+            source_end = min(source_start + MATRIX_CHUNK_SIZE, num_locations)
+            source_chunk = locations[source_start:source_end]
+            source_formatted = [[loc[1], loc[0]] for loc in source_chunk]
+            
+            # Step 3: Loop through destination chunks
+            for dest_start in range(0, num_locations, MATRIX_CHUNK_SIZE):
+                dest_end = min(dest_start + MATRIX_CHUNK_SIZE, num_locations)
+                dest_chunk = locations[dest_start:dest_end]
+                dest_formatted = [[loc[1], loc[0]] for loc in dest_chunk]
+                
+                chunk_count += 1
+                logger.info(f"Fetching chunk {chunk_count}/{total_chunks}: sources [{source_start}:{source_end}], destinations [{dest_start}:{dest_end}]")
+                
+                # Small delay between requests to avoid rate limiting (except for first request)
+                if chunk_count > 1:
+                    time.sleep(0.5)  # 500ms delay between chunk requests
+                
+                # Step 4: Fetch sub-matrix for this chunk pair
+                try:
+                    body = {
+                        "locations": source_formatted + dest_formatted,
+                        "sources": list(range(len(source_formatted))),
+                        "destinations": list(range(len(source_formatted), len(source_formatted) + len(dest_formatted))),
+                        "metrics": ["distance", "duration"]
+                    }
+                    
+                    response = self.session.post(
+                        url,
+                        json=body,
+                        headers=headers,
+                        timeout=timeout
+                    )
+                    response.raise_for_status()
+                    
+                    data = response.json()
+                    chunk_durations = data['durations']
+                    chunk_distances = data['distances']
+                    
+                    # Step 5: Stitch the sub-matrix into the correct positions in main matrices
+                    # chunk_durations[i][j] corresponds to source_chunk[i] -> dest_chunk[j]
+                    # source_chunk[i] is locations[source_start + i]
+                    # dest_chunk[j] is locations[dest_start + j]
+                    # So we map: durations_matrix[source_start + i][dest_start + j] = chunk_durations[i][j]
+                    for i in range(len(source_chunk)):
+                        for j in range(len(dest_chunk)):
+                            if i < len(chunk_durations) and j < len(chunk_durations[i]):
+                                source_idx = source_start + i
+                                dest_idx = dest_start + j
+                                durations_matrix[source_idx][dest_idx] = chunk_durations[i][j]
+                                distances_matrix[source_idx][dest_idx] = chunk_distances[i][j]
+                    
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"Failed to fetch chunk [{source_start}:{source_end}] x [{dest_start}:{dest_end}]: {str(e)}")
+                    raise
+        
+        # Step 6: Return the fully populated matrices
+        matrix_data = {
+            'durations': durations_matrix,
+            'distances': distances_matrix
+        }
+        
+        # Save to cache
+        try:
+            with open(cache_file, 'wb') as f:
+                pickle.dump(matrix_data, f)
+            logger.info(f"Cached batched distance matrix to {cache_file}")
+        except Exception as e:
+            logger.warning(f"Failed to save cache file {cache_file}: {e}")
+        
+        logger.info(f"Successfully assembled full matrix ({num_locations} x {num_locations}) from {chunk_count} chunks")
+        return matrix_data
 
     @retry_with_backoff(max_attempts=3)
     def get_directions(self, route_coordinates: List[Coords]) -> Dict[str, Any]:
