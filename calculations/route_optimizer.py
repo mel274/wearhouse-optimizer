@@ -1,83 +1,26 @@
 """
 Main orchestration for the Warehouse Route Optimization.
-Version: 2.1 (Enhanced Failure Handling)
+Version: 3.0 (OR-Tools Integration)
 """
 import logging
 import time
+import math
 from typing import List, Dict, Any, Tuple, Set
+from ortools.constraint_solver import routing_enums_pb2
+from ortools.constraint_solver import pywrapcp
 from .types import Solution, OptimizationParams, UnservedCustomer
-from . import k_cluster, prioritization, merging, ors, metrics, utils
+from . import ors, metrics, utils
 
 logger = logging.getLogger(__name__)
 
 class RouteOptimizer:
     """
-    Orchestrates the optimization pipeline:
-    1. Fetch Matrix -> 2. Cluster -> 3. Prioritize -> 4. Merge -> 5. Finalize (ORS)
-    Includes logic to track customers that fall out of the solution.
+    Orchestrates the optimization pipeline using OR-Tools:
+    1. Fetch Matrix (cached) -> 2. OR-Tools Global Solver -> 3. Hydrate with ORS Directions
     """
     
     def __init__(self, api_key: str):
         self.ors_handler = ors.ORSHandler(api_key)
-
-    def _run_optimization_pipeline(self, 
-                                 locations: List[str], 
-                                 demands: List[int], 
-                                 coords: List[Tuple[float, float]], 
-                                 customer_coords: List[Tuple[float, float]],
-                                 customer_demands: List[int], 
-                                 params: OptimizationParams, 
-                                 matrix_data: Dict,
-                                 enable_merging: bool = True) -> Solution:
-        """
-        Runs the optimization pipeline with the given parameters.
-
-        Args:
-            locations: List of location identifiers.
-            demands: List of demand values for each location.
-            coords: List of (lat, lng) coordinates for all locations.
-            customer_coords: List of (lat, lng) coordinates for customer locations only.
-            customer_demands: List of demand values for customer locations only.
-            params: Optimization parameters including fleet size and capacity.
-            matrix_data: Precomputed distance and duration matrices.
-            enable_merging: If True, merges routes to improve efficiency.
-
-        Returns:
-            Solution: The optimized routing solution.
-        """
-        all_customer_indices = set(range(1, len(locations)))
-
-        # --- Phase 1: K-Means Clustering ---
-        logger.info("Phase 1: Initial Clustering...")
-        initial_clusters = k_cluster.perform_clustering(
-            customer_coords, customer_demands, 
-            params['fleet_size'], params['capacity']
-        )
-
-        # --- Phase 2: Global Relocation (Corridor Scavenging) ---
-        logger.info("Phase 2: Global Relocation...")
-        refined_clusters = prioritization.perform_global_relocation(
-            initial_clusters, matrix_data, demands, params
-        )
-
-        # --- Phase 3: Merging ---
-        if enable_merging:
-            logger.info("Phase 3: Route Merging enabled for efficiency.")
-            merged_clusters = merging.merge_routes(
-                refined_clusters, matrix_data, demands, params
-            )
-        else:
-            logger.info("Phase 3: Route Merging disabled to maximize coverage.")
-            merged_clusters = refined_clusters
-
-        # --- Phase 4: Final Optimization (Per Truck) ---
-        logger.info("Phase 4: Final Route Optimization...")
-        return self._finalize_routes(
-            merged_clusters, coords, demands, params, 
-            all_customer_indices, 
-            prioritize_coverage=not enable_merging,
-            enable_splitting=not enable_merging
-        )
 
     def solve(self, 
               locations: List[str], 
@@ -85,9 +28,7 @@ class RouteOptimizer:
               params: OptimizationParams, 
               coords: List[Tuple[float, float]]) -> Solution:
         """
-        Executes the optimization pipeline with a two-stage strategy:
-        1. Efficiency-focused: Tries to find the most efficient solution, possibly using fewer vehicles.
-        2. Coverage-focused: If the first fails, it prioritizes serving the maximum number of customers.
+        Executes the optimization pipeline using OR-Tools global solver.
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
@@ -96,402 +37,435 @@ class RouteOptimizer:
             if not coords:
                 raise ValueError("No coordinates provided.")
             
-            logger.info("Phase 0: Fetching Distance Matrix...")
+            logger.info("Phase 0: Fetching Distance Matrix (with caching)...")
             matrix_data = self.ors_handler.get_distance_matrix(coords)
-            time.sleep(1)
-
-            customer_coords = coords[1:]
-            customer_demands = demands[1:]
             
-            # --- Strategy 1: Efficiency First (with route merging) ---
-            logger.info("Running Strategy 1: Efficiency-focused optimization...")
-            efficiency_solution = self._run_optimization_pipeline(
-                locations=locations,
-                demands=demands,
-                coords=coords,
-                customer_coords=customer_coords,
-                customer_demands=customer_demands,
-                params=params,
-                matrix_data=matrix_data,
-                enable_merging=True  # Prioritize efficiency
-            )
+            # Build data model for OR-Tools
+            data = {
+                'distance_matrix': matrix_data['distances'],
+                'time_matrix': matrix_data['durations'],
+                'demands': demands,  # Node 0 is warehouse with demand 0
+                'vehicle_capacities': [params['capacity']] * params['fleet_size'],
+                'num_vehicles': params['fleet_size'],
+                'depot': 0,
+                'max_shift_seconds': params['max_shift_seconds']
+            }
             
-            # If all customers are served, no need for the second strategy
-            if not efficiency_solution.get('unserved'):
-                logger.info("Efficiency strategy served all customers. Solution found.")
-                return efficiency_solution
+            # Solve with OR-Tools
+            logger.info("Phase 1: Solving with OR-Tools...")
+            solution = self._solve_with_ortools(data, coords, locations, params)
             
-            # --- Strategy 2: Max-Coverage (no route merging) ---
-            logger.info(f"Strategy 1 left {len(efficiency_solution['unserved'])} unserved customers. "
-                      "Running Strategy 2: Max-Coverage optimization...")
-            
-            max_coverage_solution = self._run_optimization_pipeline(
-                locations=locations,
-                demands=demands,
-                coords=coords,
-                customer_coords=customer_coords,
-                customer_demands=customer_demands,
-                params=params,
-                matrix_data=matrix_data,
-                enable_merging=False  # Prioritize coverage over efficiency
-            )
-            
-            # --- Compare and Select the Best Solution ---
-            initial_served = len(locations) - 1 - len(efficiency_solution.get('unserved', []))
-            coverage_served = len(locations) - 1 - len(max_coverage_solution.get('unserved', []))
-            
-            if coverage_served > initial_served:
-                logger.info(f"Max-Coverage strategy is better: Served {coverage_served} customers "
-                          f"(vs {initial_served} with efficiency strategy).")
-                return max_coverage_solution
-            else:
-                logger.info(f"Efficiency strategy is better or equal: Serves {initial_served} customers "
-                          f"(vs {coverage_served} with max-coverage). Keeping initial solution.")
-                return efficiency_solution
+            return solution
 
         except Exception as e:
             logger.error(f"Optimization Failed: {e}")
             raise
 
-    def _create_new_route(self, customer_indices: List[int], demands: List[int], capacity: int) -> List[List[int]]:
-        """Create new routes from unserved customers, respecting vehicle capacity."""
-        routes = []
-        current_route = []
-        current_load = 0
+    def _solve_with_ortools(self, data: Dict[str, Any], coords: List[Tuple[float, float]], 
+                            locations: List[str], params: OptimizationParams) -> Solution:
+        """
+        Solve the VRP using OR-Tools RoutingModel.
         
-        for idx in sorted(customer_indices, key=lambda x: -demands[x]):  # Sort by demand descending
-            if current_load + demands[idx] <= capacity:
-                current_route.append(idx)
-                current_load += demands[idx]
+        Args:
+            data: Dictionary containing distance_matrix, time_matrix, demands, vehicle_capacities, etc.
+            coords: List of (lat, lng) coordinates
+            locations: List of location identifiers
+            params: Optimization parameters
+            
+        Returns:
+            Solution dictionary with routes, metrics, and unserved customers
+        """
+        # Validate required parameters
+        if 'service_time_seconds' not in params:
+            logger.warning("service_time_seconds not found in params, using default 300 seconds (5 minutes)")
+            params['service_time_seconds'] = 300
+        
+        num_nodes = len(data['distance_matrix'])
+        num_vehicles = data['num_vehicles']
+        depot = data['depot']
+        
+        # Log solver configuration
+        service_time = params.get('service_time_seconds', 300)
+        logger.info(f"Solver configuration: {num_vehicles} vehicles, max_shift={data['max_shift_seconds']}s, service_time={service_time}s")
+        
+        # Create the routing index manager
+        manager = pywrapcp.RoutingIndexManager(num_nodes, num_vehicles, depot)
+        
+        # Create routing model
+        routing = pywrapcp.RoutingModel(manager)
+        
+        # Distance callback
+        def distance_callback(from_index: int, to_index: int) -> int:
+            """Returns the distance between the two nodes."""
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            return int(data['distance_matrix'][from_node][to_node])
+        
+        distance_callback_index = routing.RegisterTransitCallback(distance_callback)
+        
+        # Set arc cost evaluator
+        routing.SetArcCostEvaluatorOfAllVehicles(distance_callback_index)
+        
+        # Time callback - includes service time when leaving customer nodes
+        # Service time is added when leaving a customer, but NOT when leaving the depot
+        service_time_seconds = params.get('service_time_seconds', 300)
+        
+        def time_callback(from_index: int, to_index: int) -> int:
+            """
+            Returns the total time cost: travel time + service time (if leaving a customer).
+            
+            Rule:
+            - If leaving the depot: return only travel time
+            - If leaving a customer: return travel time + service time
+            """
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            
+            # Get base travel time from matrix
+            travel_time = int(data['time_matrix'][from_node][to_node])
+            
+            # Add service time if leaving a customer node (not the depot)
+            if from_node != depot:
+                total_time = travel_time + service_time_seconds
             else:
-                if current_route:  # Only add non-empty routes
-                    routes.append(current_route)
-                current_route = [idx]
-                current_load = demands[idx]
-        
-        if current_route:  # Add the last route if not empty
-            routes.append(current_route)
+                total_time = travel_time
             
-        return routes
-
-    def _group_unserved_by_proximity(self, unserved_indices, coords, demands, capacity, warehouse_coord):
-        """Group unserved customers by geographical proximity, considering warehouse location."""
-        if not unserved_indices:
-            return []
+            return int(total_time)
         
-        # Calculate distances from warehouse
-        def distance_to_warehouse(idx):
-            x, y = coords[idx]
-            wx, wy = warehouse_coord
-            return ((x - wx)**2 + (y - wy)**2)**0.5
-            
-        # Sort customers by distance from warehouse (closest first)
-        customers_by_warehouse_dist = sorted(unserved_indices, key=distance_to_warehouse)
+        time_callback_index = routing.RegisterTransitCallback(time_callback)
         
-        routes = []
-        remaining_customers = set(customers_by_warehouse_dist)
+        # Add time dimension with max_shift_seconds as the upper bound
+        # The solver will now enforce: Total Route Time (Drive + Service) <= max_shift_seconds
+        routing.AddDimension(
+            time_callback_index,
+            0,  # slack max
+            data['max_shift_seconds'],  # vehicle maximum time (includes drive + service)
+            True,  # start cumul to zero
+            "Time"
+        )
         
-        # Use max_vehicles from self if available, otherwise use a reasonable default or pass it in.
-        # Assuming self.max_vehicles is set or we can use a passed parameter.
-        max_new_routes = getattr(self, 'max_vehicles', len(unserved_indices)) 
-
-        while remaining_customers and len(routes) < max_new_routes:
-            # Start with the customer closest to the warehouse
-            current_customer = min(remaining_customers, key=distance_to_warehouse)
-            current_route = [current_customer]
-            current_load = demands[current_customer]
-            remaining_customers.remove(current_customer)
+        # Demand callback - returns the demand (quantity/volume) for each node
+        def demand_callback(from_index: int) -> int:
+            """
+            Returns the demand of the node.
             
-            # Find nearest neighbors to the current route
-            while remaining_customers and current_load < capacity:
-                # Calculate distance from each remaining customer to the current route
-                def min_route_distance(cust_idx):
-                    min_dist = float('inf')
-                    for route_cust in current_route:
-                        x1, y1 = coords[cust_idx]
-                        x2, y2 = coords[route_cust]
-                        dist = ((x1 - x2)**2 + (y1 - y2)**2)**0.5
-                        min_dist = min(min_dist, dist)
-                    return min_dist
-                    
-                # Find the closest customer that fits in capacity
-                next_customer = None
-                min_dist = float('inf')
-                
-                for cust in remaining_customers:
-                    if demands[cust] + current_load <= capacity:
-                        dist = min_route_distance(cust)
-                        if dist < min_dist:
-                            min_dist = dist
-                            next_customer = cust
-                
-                if next_customer is None:
-                    break  # No more customers can fit
-                    
-                current_route.append(next_customer)
-                current_load += demands[next_customer]
-                remaining_customers.remove(next_customer)
-                
-            if current_route:
-                routes.append(current_route)
-                
-        return routes
-
-    def _finalize_routes(self, 
-                         clusters: List[Dict], 
-                         coords: List[Tuple[float, float]], 
-                         demands: List[int],
-                         params: OptimizationParams,
-                         all_indices: Set[int],
-                         prioritize_coverage: bool = False,
-                         enable_splitting: bool = False) -> Solution:
-        """
-        Sends each cluster to ORS for detailed path optimization.
-        Handles unserved customers by creating new routes when possible.
-        Returns a solution with detailed metrics and optimization suggestions.
-        """
-        unserved_customers: List[UnservedCustomer] = []
-        warehouse_coord = coords[0]
-        matrix_data = self.ors_handler.get_distance_matrix(coords)
-        max_vehicles = params['fleet_size']
-        job_priority = 100 if prioritize_coverage else 0
-
-        candidate_routes = []
-        clusters_to_process = clusters.copy()
-        i = 0
-
-        while i < len(clusters_to_process):
-            cluster = clusters_to_process[i]
-            i += 1
-            indices = cluster['indices']
-            if not indices: continue
-
-            valid_indices_for_api = []
-            for cust_idx in indices:
-                if demands[cust_idx] > params['capacity']:
-                    unserved_customers.append({
-                        'id': cust_idx, 'reason': 'Demand exceeds vehicle capacity',
-                        'demand': demands[cust_idx]
-                    })
-                else:
-                    valid_indices_for_api.append(cust_idx)
+            Note: Node 0 (depot) should have demand 0.
+            Customer nodes should have their actual demand value (quantity or volume).
+            """
+            from_node = manager.IndexToNode(from_index)
+            demand = data['demands'][from_node]
             
-            if not valid_indices_for_api: continue
-
-            valid_indices_for_api.sort(key=lambda x: matrix_data['distances'][0][x], reverse=True)
-
-            route_found = False
-            while valid_indices_for_api and not route_found:
-                jobs = [{
-                    "id": cust_idx, "service": params['service_time_seconds'],
-                    "amount": [demands[cust_idx]], "location": [coords[cust_idx][1], coords[cust_idx][0]],
-                    **({"priority": job_priority} if prioritize_coverage and job_priority > 0 else {})
-                } for cust_idx in valid_indices_for_api]
-                
-                vehicle = {
-                    "id": 1, "profile": "driving-car",
-                    "start": [warehouse_coord[1], warehouse_coord[0]],
-                    "end": [warehouse_coord[1], warehouse_coord[0]],
-                    "capacity": [params['capacity']],
-                    "time_window": [0, params['max_shift_seconds']]
+            # Ensure demand is non-negative and convert to int
+            demand_value = max(0, int(demand))
+            
+            # Validate depot has zero demand
+            if from_node == depot and demand_value != 0:
+                logger.warning(f"Depot (node {depot}) has non-zero demand: {demand_value}. Setting to 0.")
+                return 0
+            
+            return demand_value
+        
+        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
+        
+        # Add capacity dimension - enforces that total demand on a route <= vehicle capacity
+        routing.AddDimensionWithVehicleCapacity(
+            demand_callback_index,
+            0,  # slack max
+            data['vehicle_capacities'],  # vehicle maximum capacities (list, one per vehicle)
+            True,  # start cumul to zero
+            "Capacity"
+        )
+        
+        # Add disjunctions (penalties for unassigned nodes)
+        penalty_value = 10**6  # Large penalty to encourage serving customers
+        for node in range(1, num_nodes):  # Skip depot (node 0)
+            routing.AddDisjunction([manager.NodeToIndex(node)], penalty_value)
+        
+        # Set search parameters
+        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
+        search_parameters.first_solution_strategy = (
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+        )
+        search_parameters.local_search_metaheuristic = (
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+        )
+        search_parameters.time_limit.seconds = 5  # 5 second time limit
+        
+        # Solve
+        logger.info("Solving VRP with OR-Tools...")
+        solution = routing.SolveWithParameters(search_parameters)
+        
+        if solution is None:
+            logger.error("OR-Tools failed to find a solution")
+            return {
+                'solution_found': False,
+                'routes': [],
+                'route_metrics': [],
+                'unserved': [
+                    {'id': i, 'reason': 'Solver failed to find solution', 'demand': data['demands'][i]}
+                    for i in range(1, num_nodes)
+                ],
+                'suggestions': {
+                    'all_served': False,
+                    'message': 'Solver failed to find a feasible solution',
+                    'suggestions': []
+                },
+                'metrics': {
+                    'total_distance': 0,
+                    'total_time': 0,
+                    'max_route_time': 0,
+                    'num_vehicles_used': 0,
+                    'customers_served': 0,
+                    'customers_unserved': num_nodes - 1,
+                    'service_rate': 0
                 }
-                
-                request_body = {"vehicles": [vehicle], "jobs": jobs, "options": {"g": True}}
-
-                try:
-                    time.sleep(0.3)
-                    api_res = self.ors_handler.optimize_route(request_body)
-                    if 'code' in api_res and api_res['code'] != 0:
-                        raise Exception(f"ORS Error Code {api_res['code']}: {api_res.get('message', 'Unknown Error')}")
-
-                    current_unserved = []
-                    if 'unassigned' in api_res:
-                        for job in api_res['unassigned']:
-                            current_unserved.append({'id': job['id'], 'reason': job.get('description', 'Constraint Violation'), 'demand': demands[job['id']]})
-
-                    if 'routes' in api_res and api_res['routes']:
-                        route_data = api_res['routes'][0]
-                        route_duration = route_data.get('duration', 0) + (len(valid_indices_for_api) * params['service_time_seconds'])
-
-                        if route_duration <= params['max_shift_seconds']:
-                            steps = [step['job'] for step in route_data.get('steps', []) if step['type'] == 'job']
-                            polylines = self.ors_handler.get_route_polylines(route_data, warehouse_coord)
-                            
-                            candidate_routes.append({
-                                'route': [0] + list(steps) + [0],
-                                'metrics': {'distance': route_data.get('distance', 0), 'duration': route_duration, 'polylines': polylines},
-                                'served_indices': steps,
-                                'unserved_in_route': current_unserved
-                            })
-                            route_found = True
-                            continue
-
-                    if enable_splitting and len(clusters_to_process) < max_vehicles * 2 and len(valid_indices_for_api) > 1:
-                        sorted_by_lat = sorted(valid_indices_for_api, key=lambda c: coords[c][0])
-                        mid = len(sorted_by_lat) // 2
-                        c1, c2 = sorted_by_lat[:mid], sorted_by_lat[mid:]
-                        if c1 and c2:
-                            clusters_to_process.extend([{'indices': c1}, {'indices': c2}])
-                            route_found = True
-                            continue
-
-                    if valid_indices_for_api:
-                        removed = valid_indices_for_api.pop(0)
-                        unserved_customers.append({'id': removed, 'reason': 'Removed for feasibility', 'demand': demands[removed]})
-
-                except Exception as e:
-                    logger.error(f"Cluster {i} Optimization Error: {e}")
-                    if valid_indices_for_api:
-                        removed = valid_indices_for_api.pop(0)
-                        unserved_customers.append({'id': removed, 'reason': f'Removed after error: {e}', 'demand': demands[removed]})
-
-        # --- Selection from Candidate Routes ---
-        final_routes, route_metrics, served_indices = [], [], set()
-        if candidate_routes:
-            # Sort candidates by the number of customers they serve
-            candidate_routes.sort(key=lambda x: len(x['served_indices']), reverse=True)
-            
-            # Select the best routes up to the fleet size limit
-            selected_routes = candidate_routes[:max_vehicles]
-            
-            for r in selected_routes:
-                final_routes.append(r['route'])
-                route_metrics.append(r['metrics'])
-                served_indices.update(r['served_indices'])
-                unserved_customers.extend(r['unserved_in_route'])
-
-            # Add customers from non-selected routes to unserved list
-            served_in_selected = set().union(*(r['served_indices'] for r in selected_routes))
-            for r in candidate_routes:
-                for cust_id in r['served_indices']:
-                    if cust_id not in served_in_selected:
-                        unserved_customers.append({'id': cust_id, 'reason': 'Route not selected due to fleet limit', 'demand': demands[cust_id]})
-
-        # Handle unserved customers by creating new routes if we have available vehicles
-        remaining_unserved = all_indices - served_indices - {u['id'] for u in unserved_customers}
+            }
         
-        # Add any unaccounted customers to unserved list
-        for idx in remaining_unserved:
+        # Extract solution
+        return self._extract_solution(routing, manager, solution, data, coords, locations, params)
+
+    def _extract_solution(self, routing: pywrapcp.RoutingModel, manager: pywrapcp.RoutingIndexManager,
+                         solution: pywrapcp.Assignment, data: Dict[str, Any], 
+                         coords: List[Tuple[float, float]], locations: List[str],
+                         params: OptimizationParams) -> Solution:
+        """
+        Extract routes from OR-Tools solution and hydrate with ORS directions.
+        
+        Args:
+            routing: OR-Tools routing model
+            manager: OR-Tools index manager
+            solution: OR-Tools solution assignment
+            data: Data dictionary with matrices and parameters
+            coords: List of (lat, lng) coordinates
+            locations: List of location identifiers
+            params: Optimization parameters
+            
+        Returns:
+            Solution dictionary with routes, metrics, and unserved customers
+        """
+        routes = []
+        route_metrics = []
+        served_indices = set()
+        
+        # Extract routes for each vehicle
+        for vehicle_id in range(data['num_vehicles']):
+            route_nodes = []
+            index = routing.Start(vehicle_id)
+            
+            while not routing.IsEnd(index):
+                node_index = manager.IndexToNode(index)
+                if node_index != data['depot']:  # Don't add depot in the middle
+                    route_nodes.append(node_index)
+                    served_indices.add(node_index)
+                index = solution.Value(routing.NextVar(index))
+            
+            # Only add non-empty routes
+            if route_nodes:
+                # Build full route: depot -> customers -> depot
+                full_route = [data['depot']] + route_nodes + [data['depot']]
+                routes.append(full_route)
+                
+                # Get route coordinates for directions API
+                route_coords = [coords[node] for node in full_route]
+                
+                # Get geometry and precise metrics from ORS Directions API
+                try:
+                    directions_data = self.ors_handler.get_directions(route_coords)
+                    geometry = directions_data['geometry']
+                    distance = directions_data['distance']
+                    duration = directions_data['duration']
+                    
+                    # Add service time for each customer stop
+                    service_time = params.get('service_time_seconds', 300)
+                    duration += len(route_nodes) * service_time
+                    
+                    # Format polylines for frontend (list of coordinate lists)
+                    polylines = [geometry] if geometry else []
+                    
+                    route_metrics.append({
+                        'distance': distance,
+                        'duration': duration,
+                        'polylines': polylines
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to get directions for vehicle {vehicle_id}: {e}. Using matrix estimates.")
+                    # Fallback: calculate from matrix
+                    total_distance = 0
+                    total_duration = 0
+                    for i in range(len(full_route) - 1):
+                        from_node = full_route[i]
+                        to_node = full_route[i + 1]
+                        total_distance += data['distance_matrix'][from_node][to_node]
+                        total_duration += data['time_matrix'][from_node][to_node]
+                    
+                    service_time = params.get('service_time_seconds', 300)
+                    total_duration += len(route_nodes) * service_time
+                    
+                    route_metrics.append({
+                        'distance': total_distance,
+                        'duration': total_duration,
+                        'polylines': []  # No geometry available
+                    })
+        
+        # Identify unserved customers
+        all_customer_indices = set(range(1, len(locations)))
+        unserved_indices = all_customer_indices - served_indices
+        
+        unserved_customers = []
+        for idx in unserved_indices:
+            # Check if demand exceeds capacity
+            if data['demands'][idx] > params['capacity']:
+                reason = 'Demand exceeds vehicle capacity'
+            else:
+                reason = 'Not assigned to any route'
+            
             unserved_customers.append({
                 'id': idx,
-                'reason': 'Not assigned to any route',
-                'demand': demands[idx]
+                'reason': reason,
+                'demand': data['demands'][idx]
             })
         
-        # Try to create new routes for unserved customers if we have vehicle capacity
-        if unserved_customers and len(final_routes) < max_vehicles:
-            unserved_indices = [u['id'] for u in unserved_customers]
-            remaining_vehicles = max_vehicles - len(final_routes)
+        # Optional heuristic retry for remaining unserved customers
+        if unserved_customers and len(routes) < data['num_vehicles']:
+            logger.info(f"Attempting heuristic fallback for {len(unserved_customers)} unserved customers")
+            remaining_unserved = [u['id'] for u in unserved_customers if u['demand'] <= params['capacity']]
             
-            # Group unserved customers by proximity to warehouse and each other
-            new_routes = self._group_unserved_by_proximity(
-                unserved_indices=unserved_indices,
-                coords=coords,
-                demands=demands,
-                capacity=params['capacity'],
-                warehouse_coord=warehouse_coord
-            )
-            
-            # Limit to remaining vehicle capacity
-            new_routes = new_routes[:remaining_vehicles]
+            if remaining_unserved:
+                # Try to create additional routes using geometric fallback
+                new_routes, new_metrics, newly_served = self._apply_heuristic_fallback(
+                    remaining_unserved, coords, data['demands'], params, data
+                )
             
             if new_routes:
-                logger.info(f"Attempting to create and validate {len(new_routes)} new routes for unserved customers.")
-                newly_served_indices = set()
-
-                for route_idx, route in enumerate(new_routes):
-                    if not route:
-                        continue
-
-                    # Prepare jobs for the new route
-                    jobs = []
-                    for cust_idx in route:
-                        c_coords = coords[cust_idx]
-                        jobs.append({
-                            "id": cust_idx,
-                            "service": params['service_time_seconds'],
-                            "amount": [demands[cust_idx]],
-                            "location": [c_coords[1], c_coords[0]]
-                        })
-
-                    # Vehicle setup for the new route
-                    vehicle = {
-                        "id": len(final_routes) + 1, "profile": "driving-car",
-                        "start": [warehouse_coord[1], warehouse_coord[0]],
-                        "end": [warehouse_coord[1], warehouse_coord[0]],
-                        "capacity": [params['capacity']],
-                        "time_window": [0, params['max_shift_seconds']]
-                    }
-
-                    request_body = {"vehicles": [vehicle], "jobs": jobs, "options": {"g": True}}
-
-                    try:
-                        time.sleep(0.3) # Rate limit
-                        api_res = self.ors_handler.optimize_route(request_body)
-
-                        if 'routes' in api_res and api_res['routes']:
-                            route_data = api_res['routes'][0]
-                            route_duration = route_data.get('duration', 0) + (len(route) * params['service_time_seconds'])
-
-                            if route_duration <= params['max_shift_seconds'] and not api_res.get('unassigned'):
-                                # This new route is valid
-                                steps = [step['job'] for step in route_data.get('steps', []) if step['type'] == 'job']
-                                full_route = [0] + steps + [0]
-                                polylines = self.ors_handler.get_route_polylines(route_data, warehouse_coord)
-
-                                final_routes.append(full_route)
-                                route_metrics.append({
-                                    'distance': route_data.get('distance', 0),
-                                    'duration': route_duration,
-                                    'polylines': polylines
-                                })
-                                newly_served_indices.update(route_data.get('steps', []))
-                                logger.info(f"Successfully created and validated new route serving {len(steps)} customers.")
-                            else:
-                                # Route is not feasible, customers remain unserved
-                                logger.warning(f"Generated new route for {len(route)} customers was not feasible and was discarded.")
-                        else:
-                            logger.error(f"API error while validating new route: {api_res.get('message', 'Unknown error')}")
-
-                    except Exception as e:
-                        logger.error(f"Exception while validating new route: {e}")
-
-                # Update master lists of served/unserved customers
-                if newly_served_indices:
-                    served_indices.update(newly_served_indices)
-                    unserved_customers = [u for u in unserved_customers if u['id'] not in newly_served_indices]
-
-        # Analyze unserved customers and generate suggestions
+                    routes.extend(new_routes)
+                    route_metrics.extend(new_metrics)
+                    served_indices.update(newly_served)
+                    # Update unserved list
+                    unserved_customers = [u for u in unserved_customers if u['id'] not in newly_served]
+        
+        # Generate suggestions
         suggestions = self._generate_suggestions(
             unserved_customers, 
-            demands, 
+            data['demands'],
             params, 
             coords, 
             len(served_indices),
-            len(all_indices) if all_indices else 1
+            len(all_customer_indices)
         )
 
         # Calculate metrics
-        total_dist = sum(r['distance'] for r in route_metrics)
+        total_distance = sum(r['distance'] for r in route_metrics)
         total_time = sum(r['duration'] for r in route_metrics)
         max_route_time = max((r['duration'] for r in route_metrics), default=0)
 
         return {
             'solution_found': True,
-            'routes': final_routes,
+            'routes': routes,
             'route_metrics': route_metrics,
             'unserved': unserved_customers,
             'suggestions': suggestions,
             'metrics': {
-                'total_distance': total_dist,
+                'total_distance': total_distance,
                 'total_time': total_time,
                 'max_route_time': max_route_time,
-                'num_vehicles_used': len(final_routes),
+                'num_vehicles_used': len(routes),
                 'customers_served': len(served_indices),
                 'customers_unserved': len(unserved_customers),
-                'service_rate': len(served_indices) / len(all_indices) if all_indices else 0
+                'service_rate': len(served_indices) / len(all_customer_indices) if all_customer_indices else 0
             }
         }
+
+    def _apply_heuristic_fallback(self, unserved_indices: List[int], coords: List[Tuple[float, float]],
+                                  demands: List[int], params: OptimizationParams, data: Dict[str, Any]) -> Tuple[List[List[int]], List[Dict], Set[int]]:
+        """
+        Apply geometric fallback for unserved customers.
+        Returns (routes, metrics, served_indices).
+        """
+        if not unserved_indices:
+            return [], [], set()
+        
+        def get_dist(p1: Tuple[float, float], p2: Tuple[float, float]) -> float:
+            return math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2)
+        
+        routes = []
+        metrics_list = []
+        served = set()
+        
+        # Sort by distance from warehouse
+        warehouse_coord = coords[0]
+        unserved_sorted = sorted(unserved_indices, key=lambda idx: get_dist(coords[idx], warehouse_coord))
+        
+        current_route = []
+        current_load = 0
+        
+        for idx in unserved_sorted:
+            if current_load + demands[idx] <= params['capacity']:
+                current_route.append(idx)
+                current_load += demands[idx]
+            else:
+                if current_route:
+                    # Finalize current route
+                    full_route = [0] + current_route + [0]
+                    routes.append(full_route)
+                    served.update(current_route)
+                    
+                    # Get directions for geometry
+                    route_coords = [coords[node] for node in full_route]
+                    try:
+                        directions_data = self.ors_handler.get_directions(route_coords)
+                        service_time = params.get('service_time_seconds', 300)
+                        metrics_list.append({
+                            'distance': directions_data['distance'],
+                            'duration': directions_data['duration'] + len(current_route) * service_time,
+                            'polylines': [directions_data['geometry']] if directions_data['geometry'] else []
+                        })
+                    except Exception as e:
+                        logger.warning(f"Failed to get directions for fallback route: {e}")
+                        # Use matrix estimates
+                        total_dist = sum(data['distance_matrix'][full_route[i]][full_route[i+1]] 
+                                       for i in range(len(full_route) - 1))
+                        total_time = sum(data['time_matrix'][full_route[i]][full_route[i+1]] 
+                                       for i in range(len(full_route) - 1))
+                        service_time = params.get('service_time_seconds', 300)
+                        metrics_list.append({
+                            'distance': total_dist,
+                            'duration': total_time + len(current_route) * service_time,
+                            'polylines': []
+                        })
+                
+                # Start new route
+                current_route = [idx]
+                current_load = demands[idx]
+        
+        # Add final route if exists
+        if current_route:
+            full_route = [0] + current_route + [0]
+            routes.append(full_route)
+            served.update(current_route)
+            
+            route_coords = [coords[node] for node in full_route]
+            try:
+                directions_data = self.ors_handler.get_directions(route_coords)
+                service_time = params.get('service_time_seconds', 300)
+                metrics_list.append({
+                    'distance': directions_data['distance'],
+                    'duration': directions_data['duration'] + len(current_route) * service_time,
+                    'polylines': [directions_data['geometry']] if directions_data['geometry'] else []
+                })
+            except Exception as e:
+                logger.warning(f"Failed to get directions for final fallback route: {e}")
+                total_dist = sum(data['distance_matrix'][full_route[i]][full_route[i+1]] 
+                               for i in range(len(full_route) - 1))
+                total_time = sum(data['time_matrix'][full_route[i]][full_route[i+1]] 
+                               for i in range(len(full_route) - 1))
+                service_time = params.get('service_time_seconds', 300)
+                metrics_list.append({
+                    'distance': total_dist,
+                    'duration': total_time + len(current_route) * service_time,
+                    'polylines': []
+                })
+        
+        return routes, metrics_list, served
 
     def _generate_suggestions(self, unserved_customers, demands, params, coords, served_count, total_customers):
         """Generate optimization suggestions based on unserved customers."""
@@ -561,42 +535,3 @@ class RouteOptimizer:
             }
         }
 
-    def _apply_fallback(self, indices, routes_list, metrics_list, coords, served_indices_set):
-        """Geometric sort fallback with distance calculation."""
-        import math
-        
-        def get_dist(p1, p2):
-            return math.sqrt((p1[0]-p2[0])**2 + (p1[1]-p2[1])**2)
-        
-        if not indices:
-            return
-            
-        # Start from warehouse (index 0)
-        path = []
-        total_distance = 0
-        current = 0  # warehouse index
-        unvisited = set(indices)
-        
-        while unvisited:
-            next_point = min(unvisited, key=lambda x: get_dist(coords[current], coords[x]))
-            total_distance += get_dist(coords[current], coords[next_point])
-            path.append(next_point)
-            unvisited.remove(next_point)
-            current = next_point
-        
-        # Return to warehouse
-        total_distance += get_dist(coords[current], coords[0])
-        full_route = [0] + path + [0]
-        
-        # Calculate estimated time (assuming 30 km/h average speed)
-        avg_speed_kmh = 30
-        distance_km = total_distance / 1000  # convert to km
-        duration_seconds = (distance_km / avg_speed_kmh) * 3600  # convert to seconds
-        
-        routes_list.append(full_route)
-        metrics_list.append({
-            'distance': total_distance,
-            'duration': duration_seconds,
-            'polylines': []  # No polylines available in fallback
-        })
-        served_indices_set.update(indices)

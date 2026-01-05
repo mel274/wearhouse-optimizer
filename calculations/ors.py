@@ -5,6 +5,9 @@ import requests
 import logging
 import math
 import time
+import hashlib
+import pickle
+from pathlib import Path
 from typing import List, Dict, Any, Tuple, Optional, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -18,6 +21,12 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONNECT_TIMEOUT = 10
 DEFAULT_READ_TIMEOUT = 120  # Increased from 30 to 120 seconds
 MAX_RETRIES = 3
+
+def _compute_matrix_cache_key(locations: List[Coords]) -> str:
+    """Compute a stable hash key for the given coordinates."""
+    # Create a stable representation of coordinates
+    coords_str = repr(sorted(locations))
+    return hashlib.sha1(coords_str.encode()).hexdigest()[:16]
 
 class ORSHandler:
     def __init__(self, api_key: str, connect_timeout: int = DEFAULT_CONNECT_TIMEOUT, 
@@ -60,7 +69,7 @@ class ORSHandler:
     @retry_with_backoff(max_attempts=3)
     def get_distance_matrix(self, locations: List[Coords], timeout: Optional[Union[float, Tuple[float, float]]] = None) -> MatrixData:
         """
-        Fetch distance and duration matrix with enhanced error handling.
+        Fetch distance and duration matrix with enhanced error handling and disk caching.
         
         Args:
             locations: List of (lat, lng) coordinates
@@ -78,7 +87,23 @@ class ORSHandler:
             
         if not locations:
             raise ValueError("At least one location is required.")
-            
+        
+        # Check cache first
+        cache_key = _compute_matrix_cache_key(locations)
+        cache_dir = Path(".cache/matrices")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        cache_file = cache_dir / f"matrix_{cache_key}.pkl"
+        
+        if cache_file.exists():
+            try:
+                logger.info(f"Loading distance matrix from cache: {cache_file}")
+                with open(cache_file, 'rb') as f:
+                    cached_data = pickle.load(f)
+                logger.info(f"Successfully loaded cached matrix for {len(locations)} locations")
+                return cached_data
+            except Exception as e:
+                logger.warning(f"Failed to load cache file {cache_file}: {e}. Fetching from API.")
+        
         logger.info(f"Fetching distance matrix for {len(locations)} locations")
         
         # Use instance timeout if not specified
@@ -107,10 +132,20 @@ class ORSHandler:
             response.raise_for_status()
             
             data = response.json()
-            return {
+            matrix_data = {
                 'durations': data['durations'],
                 'distances': data['distances']
             }
+            
+            # Save to cache
+            try:
+                with open(cache_file, 'wb') as f:
+                    pickle.dump(matrix_data, f)
+                logger.info(f"Cached distance matrix to {cache_file}")
+            except Exception as e:
+                logger.warning(f"Failed to save cache file {cache_file}: {e}")
+            
+            return matrix_data
             
         except requests.exceptions.Timeout as e:
             logger.error(f"Request timed out after {timeout} seconds: {str(e)}")
@@ -120,60 +155,79 @@ class ORSHandler:
             raise
 
     @retry_with_backoff(max_attempts=3)
-    def optimize_route(self, request_body: Dict[str, Any], timeout: Optional[Union[float, Tuple[float, float]]] = None) -> Dict[str, Any]:
+    def get_directions(self, route_coordinates: List[Coords]) -> Dict[str, Any]:
         """
-        Optimize vehicle routing with enhanced error handling.
+        Fetch route geometry (polylines) and precise distance/duration from ORS Directions API.
         
         Args:
-            request_body: The optimization request body
-            timeout: Optional timeout in seconds (can be tuple of (connect_timeout, read_timeout))
+            route_coordinates: List of (lat, lng) coordinates in stop order
             
         Returns:
-            The optimization response as a dictionary
+            Dictionary with 'geometry' (list of (lat, lng) tuples), 'distance' (meters), and 'duration' (seconds)
             
         Raises:
-            ValueError: If API key is missing or request body is invalid
+            ValueError: If API key is missing or coordinates list is empty
             requests.exceptions.RequestException: For request-related errors
         """
         if not self.api_key:
-            raise ValueError("API Key is required for optimization requests.")
+            raise ValueError("API Key is required for directions requests.")
             
-        if not request_body:
-            raise ValueError("Request body cannot be empty.")
-            
-        logger.info("Starting route optimization")
+        if not route_coordinates or len(route_coordinates) < 2:
+            raise ValueError("At least two coordinates are required for directions.")
         
-        # Use instance timeout if not specified
-        timeout = timeout or self.timeout
+        logger.info(f"Fetching directions for route with {len(route_coordinates)} waypoints")
         
         try:
-            url = "https://api.openrouteservice.org/optimization"
+            # ORS expects [lon, lat]
+            formatted_coords = [[coord[1], coord[0]] for coord in route_coordinates]
+            
+            url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
             headers = {
                 'Authorization': self.api_key,
                 'Content-Type': 'application/json'
             }
+            body = {
+                "coordinates": formatted_coords
+            }
             
             response = self.session.post(
-                url, 
-                json=request_body, 
-                headers=headers, 
-                timeout=timeout
+                url,
+                json=body,
+                headers=headers,
+                timeout=self.timeout
             )
             response.raise_for_status()
             
-            return response.json()
+            data = response.json()
+            
+            # Extract geometry from GeoJSON
+            geometry = []
+            if 'features' in data and len(data['features']) > 0:
+                feature = data['features'][0]
+                if 'geometry' in feature and 'coordinates' in feature['geometry']:
+                    # Convert [lon, lat] -> (lat, lon)
+                    geometry = [(coord[1], coord[0]) for coord in feature['geometry']['coordinates']]
+            
+            # Extract distance and duration from properties
+            distance = 0.0
+            duration = 0.0
+            if 'features' in data and len(data['features']) > 0:
+                properties = data['features'][0].get('properties', {})
+                summary = properties.get('summary', {})
+                distance = summary.get('distance', 0.0)  # meters
+                duration = summary.get('duration', 0.0)  # seconds
+            
+            return {
+                'geometry': geometry,
+                'distance': distance,
+                'duration': duration
+            }
             
         except requests.exceptions.Timeout as e:
-            logger.error(f"Optimization request timed out after {timeout} seconds: {str(e)}")
+            logger.error(f"Directions request timed out: {str(e)}")
             raise
         except requests.exceptions.RequestException as e:
-            logger.error(f"Optimization request failed: {str(e)}")
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_details = e.response.json()
-                    logger.error(f"Error details: {error_details}")
-                except:
-                    logger.error(f"Response content: {e.response.text}")
+            logger.error(f"Directions request failed: {str(e)}")
             raise
 
     def get_route_polylines(self, route_data: Dict, start_coords: Coords) -> List[List[Coords]]:

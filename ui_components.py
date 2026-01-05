@@ -8,15 +8,16 @@ from config import Config
 from geo_service import GeoService
 
 
-def setup_sidebar() -> Optional[Dict[str, Any]]:
+def setup_sidebar() -> Dict[str, Any]:
     """
     Setup and configure the sidebar with settings and parameters.
 
     Returns:
-        Dictionary with services and parameters, or None if setup fails.
+        Dictionary with services and parameters. Services may be None if API keys are missing,
+        but the dictionary structure is always returned to support graceful degradation.
     """
     if os.path.exists("michelin-logo-1.png"):
-        st.sidebar.image("michelin-logo-1.png", use_container_width=True)
+        st.sidebar.image("michelin-logo-1.png")
     st.sidebar.header("⚙️ Settings")
 
     st.sidebar.subheader("Warehouse Location")
@@ -31,8 +32,8 @@ def setup_sidebar() -> Optional[Dict[str, Any]]:
         if st.session_state.geo_service is None:
             st.session_state.geo_service = GeoService(Config.OPENROUTESERVICE_API_KEY)
     else:
-        st.sidebar.error("⚠️ Missing API Key")
-        return None
+        st.sidebar.warning("⚠️ API Key not configured. Geocoding and optimization features will be disabled.")
+        st.session_state.geo_service = None
 
     st.sidebar.subheader("Fleet Parameters")
     fleet_size = st.sidebar.slider(
@@ -80,3 +81,17 @@ def init_session_state() -> None:
         st.session_state.warehouse_coords = None
     if 'file_id' not in st.session_state:
         st.session_state.file_id = None
+    # Raw data (preserved before aggregation for date filtering)
+    if 'raw_data' not in st.session_state:
+        st.session_state.raw_data = None
+    # Simulation data (for historical backtesting)
+    if 'distance_matrix' not in st.session_state:
+        st.session_state.distance_matrix = None
+    if 'time_matrix' not in st.session_state:
+        st.session_state.time_matrix = None
+    if 'node_map' not in st.session_state:
+        st.session_state.node_map = None
+    if 'optimization_params' not in st.session_state:
+        st.session_state.optimization_params = None
+    if 'valid_coords_for_simulation' not in st.session_state:
+        st.session_state.valid_coords_for_simulation = None

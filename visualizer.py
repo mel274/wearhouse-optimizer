@@ -118,52 +118,97 @@ class MapBuilder:
             
             # 1. Process Valid Routes
             routes = solution.get('routes', [])
+            route_metrics = solution.get('route_metrics', [])
+            
             for route_idx, route in enumerate(routes):
                 if len(route) <= 1: continue
                 
                 color = self.colors[route_idx % len(self.colors)]
-                full_route_path = []
                 
-                # Plot Route path and stops
+                # Check for pre-calculated polylines in route metrics
+                route_polylines = None
+                if route_idx < len(route_metrics):
+                    metrics = route_metrics[route_idx]
+                    polylines = metrics.get('polylines', [])
+                    if polylines and len(polylines) > 0:
+                        # polylines is a list of coordinate lists, use the first one (full route)
+                        route_polylines = polylines[0]
+                
+                # Add stop markers for all stops in the route
+                stop_counter = 0  # Track customer stops (excluding depot)
                 for i in range(len(route)):
                     curr_node_idx = route[i]
                     if curr_node_idx == 0:
-                        curr_coords = warehouse_coords
+                        # Skip warehouse marker (already added at the beginning)
+                        continue
                     else:
                         if curr_node_idx - 1 < len(locations_df):
                             cust = locations_df.iloc[curr_node_idx - 1]
                             curr_coords = (cust['lat'], cust['lng'])
-                            self._add_stop_marker(m, cust, curr_coords, i, route_idx + 1, color)
-                    
-                    # Connect to next node
-                    if i < len(route) - 1:
-                        next_node_idx = route[i+1]
-                        if next_node_idx == 0:
-                            next_coords = warehouse_coords
-                        else:
-                            if next_node_idx - 1 < len(locations_df):
-                                cust_next = locations_df.iloc[next_node_idx - 1]
-                                next_coords = (cust_next['lat'], cust_next['lng'])
-                            else:
-                                continue
-
-                        # Use polylines if available in metrics, otherwise fallback
-                        # Note: We rely on visualizer receiving polyline data or using fallback
-                        if geo_service:
-                            segment_points = geo_service.get_route_polyline(curr_coords, next_coords)
-                            full_route_path.extend(segment_points)
-                        else:
-                            full_route_path.extend([curr_coords, next_coords])
+                            # Increment stop counter (first customer = stop 1, second = stop 2, etc.)
+                            stop_counter += 1
+                            self._add_stop_marker(m, cust, curr_coords, stop_counter, route_idx + 1, color)
                 
-                # Draw polyline for route
-                if full_route_path:
+                # Draw route path using pre-calculated polylines if available
+                if route_polylines:
+                    # Use pre-calculated geometry from optimization
                     folium.PolyLine(
-                        locations=full_route_path,
+                        locations=route_polylines,
                         color=color,
                         weight=4,
                         opacity=0.8,
                         popup=f'<div>Route {route_idx + 1}</div>'
                     ).add_to(m)
+                else:
+                    # Fallback: build path segment by segment
+                    full_route_path = []
+                    for i in range(len(route)):
+                        curr_node_idx = route[i]
+                        if curr_node_idx == 0:
+                            curr_coords = warehouse_coords
+                        else:
+                            if curr_node_idx - 1 < len(locations_df):
+                                cust = locations_df.iloc[curr_node_idx - 1]
+                                curr_coords = (cust['lat'], cust['lng'])
+                            else:
+                                continue
+                        
+                        # Connect to next node
+                        if i < len(route) - 1:
+                            next_node_idx = route[i+1]
+                            if next_node_idx == 0:
+                                next_coords = warehouse_coords
+                            else:
+                                if next_node_idx - 1 < len(locations_df):
+                                    cust_next = locations_df.iloc[next_node_idx - 1]
+                                    next_coords = (cust_next['lat'], cust_next['lng'])
+                                else:
+                                    continue
+
+                            # Try to get polyline from geo_service if available
+                            if geo_service:
+                                try:
+                                    segment_points = geo_service.get_route_polyline(curr_coords, next_coords)
+                                    if segment_points:
+                                        full_route_path.extend(segment_points)
+                                    else:
+                                        full_route_path.extend([curr_coords, next_coords])
+                                except Exception:
+                                    # Fallback to straight line if geo_service fails
+                                    full_route_path.extend([curr_coords, next_coords])
+                            else:
+                                # No geo_service, use straight line
+                                full_route_path.extend([curr_coords, next_coords])
+                    
+                    # Draw polyline for route (fallback method)
+                    if full_route_path:
+                        folium.PolyLine(
+                            locations=full_route_path,
+                            color=color,
+                            weight=4,
+                            opacity=0.8,
+                            popup=f'<div>Route {route_idx + 1}</div>'
+                        ).add_to(m)
 
             # 2. Process Unserved Customers (Failed)
             unserved_list = solution.get('unserved', [])

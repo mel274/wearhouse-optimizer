@@ -15,7 +15,10 @@ import utils
 def tab_data_upload(services: Optional[Dict[str, Any]]) -> None:
     """Handle the data upload tab functionality."""
     st.header("📊 Data Upload")
+    
+    # Handle case where services might be None (shouldn't happen after fix, but defensive)
     if services is None:
+        st.warning("⚠️ Application configuration error. Please refresh the page.")
         return
 
     # Initialize services if not already done
@@ -29,26 +32,43 @@ def tab_data_upload(services: Optional[Dict[str, Any]]) -> None:
     if uploaded_file:
         try:
             file_id = f"{uploaded_file.name}-{uploaded_file.size}"
-            if st.session_state.file_id != file_id:
+            # Reload data if file changed OR if raw_data is missing
+            if (st.session_state.file_id != file_id or 
+                not hasattr(st.session_state, 'raw_data') or 
+                st.session_state.raw_data is None):
                 raw_data = services['data_manager'].load_data(uploaded_file)
+                # Preserve raw data before aggregation (needed for date filtering in comparison)
+                st.session_state.raw_data = raw_data.copy()
                 aggregated_data = services['data_manager'].aggregate_data(raw_data)
                 st.session_state.data = aggregated_data
                 st.session_state.file_id = file_id
                 st.session_state.solution = None
                 st.session_state.warehouse_coords = None
+                # Clear simulation data when new file is uploaded
+                st.session_state.distance_matrix = None
+                st.session_state.time_matrix = None
+                st.session_state.node_map = None
                 st.success(f"Loaded {len(aggregated_data)} customers")
 
             if st.session_state.data is not None:
                 st.dataframe(st.session_state.data)
                 geocoded_count = st.session_state.data[['lat', 'lng']].notna().all(axis=1).sum()
 
-                if st.session_state.geo_service and st.button("📍 Geocode Addresses", type="primary"):
-                    with st.spinner("Geocoding..."):
-                        geocoded_data = services['data_manager'].add_coordinates(
-                            st.session_state.data, st.session_state.geo_service
-                        )
-                        st.session_state.data = geocoded_data
-                        st.rerun()
+                # Geocode button - disabled if geo_service is not available
+                geocode_disabled = st.session_state.geo_service is None
+                if geocode_disabled:
+                    st.info("ℹ️ Geocoding requires an API key. Please configure it in your environment variables.")
+                
+                if st.button("📍 Geocode Addresses", type="primary", disabled=geocode_disabled):
+                    if st.session_state.geo_service:
+                        with st.spinner("Geocoding..."):
+                            geocoded_data = services['data_manager'].add_coordinates(
+                                st.session_state.data, st.session_state.geo_service
+                            )
+                            st.session_state.data = geocoded_data
+                            st.rerun()
+                    else:
+                        st.error("Geocoding service is not available. Please configure an API key.")
 
                 if geocoded_count > 0:
                     # Calculate logistics
@@ -105,13 +125,25 @@ def tab_data_upload(services: Optional[Dict[str, Any]]) -> None:
 def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
     """Handle the route optimization tab functionality."""
     st.header("🚛 Route Optimization")
-    if services is None or st.session_state.data is None:
-        st.warning("Upload data first.")
+    
+    # Handle case where services might be None (shouldn't happen after fix, but defensive)
+    if services is None:
+        st.warning("⚠️ Application configuration error. Please refresh the page.")
+        return
+    
+    if st.session_state.data is None:
+        st.warning("Please upload data first in the Data Upload tab.")
+        return
+
+    # Check if API key is available for optimization
+    from config import Config
+    if not Config.OPENROUTESERVICE_API_KEY:
+        st.warning("⚠️ **Optimization requires an API Key.** Please configure `OPENROUTESERVICE_API_KEY` in your environment variables to use this feature.")
+        st.info("You can still upload and view data in the Data Upload tab without an API key.")
         return
 
     # Initialize route optimizer if not already done
     if services['route_optimizer'] is None:
-        from config import Config
         services['route_optimizer'] = RouteOptimizer(Config.OPENROUTESERVICE_API_KEY)
 
     geocoded_data = st.session_state.data
@@ -152,6 +184,9 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             # Prioritize manual address
             if manual_warehouse_address:
+                if st.session_state.geo_service is None:
+                    st.error("Geocoding service is not available. Please configure an API key to use manual warehouse addresses.")
+                    return
                 with st.spinner(f"Geocoding manual address: '{manual_warehouse_address}'..."):
                     wh_coords = st.session_state.geo_service.get_coordinates(manual_warehouse_address)
                     if not wh_coords:
@@ -188,6 +223,17 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 )
 
                 st.session_state.solution = solution
+                
+                # Store matrices and node map for historical simulation
+                # This will hit the cache (matrices were fetched during optimization)
+                from calculations.simulation import create_node_map
+                matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
+                
+                st.session_state.distance_matrix = matrix_data['distances']
+                st.session_state.time_matrix = matrix_data['durations']
+                st.session_state.node_map = create_node_map(valid_coords)
+                st.session_state.optimization_params = params
+                st.session_state.valid_coords_for_simulation = valid_coords
 
                 if solution['solution_found']:
                     num_routes = len(solution['routes'])
@@ -405,110 +451,346 @@ def tab_export() -> None:
 def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
     """Handle the performance comparison tab functionality."""
     st.header("📊 Performance Comparison")
+    
+    # Handle case where services might be None (shouldn't happen after fix, but defensive)
+    if services is None:
+        st.warning("⚠️ Application configuration error. Please refresh the page.")
+        return
 
     if not st.session_state.solution or not st.session_state.solution.get('solution_found'):
         st.warning("Please run an optimization first before comparing results.")
         return
 
-    st.subheader("Upload Actuals Report")
-    actuals_file = st.file_uploader("Upload your historical data (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
+    # Check if simulation data is available
+    if not hasattr(st.session_state, 'distance_matrix') or not hasattr(st.session_state, 'time_matrix'):
+        st.warning("⚠️ Simulation data not available. Please run optimization again to enable historical backtesting.")
+        st.info("The optimization process caches distance/time matrices needed for simulation.")
+        return
 
-    if actuals_file:
+    # Check if main order data is available
+    if st.session_state.data is None:
+        st.warning("⚠️ Please upload order data in the Data Upload tab first.")
+        return
+
+    # Check if raw data is available (needed for date filtering)
+    if not hasattr(st.session_state, 'raw_data') or st.session_state.raw_data is None:
+        st.warning("⚠️ Raw order data is not available. Please re-upload your order file in the Data Upload tab to enable date filtering.")
+        st.info("The raw data is needed to filter orders by date range. Please upload your file again.")
+        return
+
+    st.subheader("Upload Summary File for Date Range")
+    st.info("ℹ️ Upload your summary file (e.g., Kogol T file) containing the date range. The simulation will use the order data from the Data Upload tab filtered by this date range.")
+    
+    summary_file = st.file_uploader("Upload Summary File (CSV/Excel)", type=['csv', 'xlsx', 'xls'], key='summary_file')
+
+    if summary_file:
         try:
-            # Load the file
-            df_actuals = pd.read_csv(actuals_file) if actuals_file.name.endswith('.csv') else pd.read_excel(actuals_file)
+            # Load the summary file
+            df_summary = pd.read_csv(summary_file) if summary_file.name.endswith('.csv') else pd.read_excel(summary_file)
 
-            # Define Hebrew to English column mapping
-            hebrew_to_english = {
-                'טווח תאריכים': 'Date Range',
-                'שם קו': 'Line Name',
-                'סהכ קמ': 'Total KM',
-                'סהכ זמן נסיעה': 'Total Driving Time'
-            }
-
-            # Check for required Hebrew columns
-            required_hebrew_cols = list(hebrew_to_english.keys())
-            if not all(col in df_actuals.columns for col in required_hebrew_cols):
-                st.error(f"Invalid file format. Please ensure the file contains the columns: {', '.join(required_hebrew_cols)}")
+            # Check for date range column
+            date_range_col = 'טווח תאריכים'
+            
+            if date_range_col not in df_summary.columns:
+                st.error(f"Summary file must contain a date range column: '{date_range_col}'")
+                st.info(f"Available columns: {', '.join(df_summary.columns)}")
                 return
 
-            # Rename columns to English for processing
-            df_actuals = df_actuals.rename(columns=hebrew_to_english)
+            # Parse date range from first row (assuming single range for now)
+            date_range_str = df_summary[date_range_col].iloc[0]
+            
+            if pd.isna(date_range_str):
+                st.error(f"Date range column is empty in the summary file.")
+                return
 
-            st.success("Actuals report uploaded successfully.")
-
-            # Data Processing Logic
-            # Parse Date Range
+            # Parse date range (format: [dd.mm.yyyy-dd.mm.yyyy] or DD/MM/YYYY-DD/MM/YYYY)
             try:
-                date_range_str = df_actuals['Date Range'].iloc[0]
-                start_date_str, end_date_str = date_range_str.split('-')
-                # Using dayfirst=True to correctly parse DD/MM/YYYY
-                start_date = pd.to_datetime(start_date_str, dayfirst=True)
-                end_date = pd.to_datetime(end_date_str, dayfirst=True)
-                num_days = (end_date - start_date).days + 1
+                # Remove square brackets if present
+                date_range_str = str(date_range_str).strip()
+                if date_range_str.startswith('[') and date_range_str.endswith(']'):
+                    date_range_str = date_range_str[1:-1].strip()
+                
+                date_parts = date_range_str.split('-')
+                if len(date_parts) != 2:
+                    raise ValueError("Date range must be in format [dd.mm.yyyy-dd.mm.yyyy] or DD/MM/YYYY-DD/MM/YYYY")
+                
+                start_date_str = date_parts[0].strip()
+                end_date_str = date_parts[1].strip()
+                
+                # Replace dots with slashes if present (handle dd.mm.yyyy format)
+                if '.' in start_date_str:
+                    start_date_str = start_date_str.replace('.', '/')
+                if '.' in end_date_str:
+                    end_date_str = end_date_str.replace('.', '/')
+                
+                # Parse dates with dayfirst=True for DD/MM/YYYY format
+                start_date = pd.to_datetime(start_date_str, dayfirst=True, errors='coerce')
+                end_date = pd.to_datetime(end_date_str, dayfirst=True, errors='coerce')
+                
+                if pd.isna(start_date) or pd.isna(end_date):
+                    raise ValueError(f"Could not parse dates: {date_parts[0]} - {date_parts[1]}")
+                
+                # Ensure end_date includes the full day
+                end_date = end_date + pd.Timedelta(days=1) - pd.Timedelta(seconds=1)
+                
             except Exception as date_e:
-                st.error(f"Could not parse the 'Date Range' column. Please ensure it is in 'DD/MM/YYYY-DD/MM/YYYY' format. Error: {date_e}")
+                st.error(f"Error parsing date range '{date_range_str}': {str(date_e)}")
+                st.info("Expected format: [dd.mm.yyyy-dd.mm.yyyy] or DD/MM/YYYY-DD/MM/YYYY (e.g., [01.07.2025-31.07.2025] or 1/7/2025-31/7/2025)")
                 return
 
-            # Aggregate Actuals
-            actual_total_km = df_actuals['Total KM'].sum()
-            actual_total_hours = df_actuals['Total Driving Time'].sum()
-            actual_trucks_used = df_actuals['Line Name'].nunique()
+            st.success(f"📅 Date range parsed: {start_date.strftime('%d/%m/%Y')} to {end_date.strftime('%d/%m/%Y')}")
 
-            # Aggregate Optimized Results (Projected)
-            optimized_metrics = st.session_state.solution['metrics']
-            service_time_per_stop_hours = services['service_time_minutes'] / 60
-            total_stops = sum(len(r) - 2 for r in st.session_state.solution['routes'])
+            # Use raw data for date filtering (has individual order dates)
+            raw_data = st.session_state.raw_data.copy()
+            
+            # Check if raw data has a date column
+            order_date_col = 'תאריך אספקה'
+            if order_date_col not in raw_data.columns:
+                st.error(f"Raw order data must contain a date column: '{order_date_col}'")
+                st.info(f"Available columns: {', '.join(raw_data.columns)}")
+                return
 
-            # Calculate total driving time (from optimizer) and add total service time
-            optimized_driving_hours_single_day = optimized_metrics.get('total_time', 0) / 3600
-            optimized_service_time_single_day = total_stops * service_time_per_stop_hours
-            optimized_total_hours_single_day = optimized_driving_hours_single_day + optimized_service_time_single_day
+            # Convert date column to datetime if needed
+            if raw_data[order_date_col].dtype == 'object':
+                raw_data[order_date_col] = pd.to_datetime(raw_data[order_date_col], dayfirst=True, errors='coerce')
+            
+            # Filter by date range
+            filtered_data = raw_data[
+                (raw_data[order_date_col] >= start_date) & 
+                (raw_data[order_date_col] <= end_date)
+            ].copy()
 
-            # Project results over the period
-            projected_optimized_km = (optimized_metrics.get('total_distance', 0) / 1000) * num_days
-            projected_optimized_hours = optimized_total_hours_single_day * num_days
-            optimized_trucks_used = optimized_metrics.get('num_vehicles_used', 0)
+            if len(filtered_data) == 0:
+                st.warning(f"⚠️ No orders found in the raw data for the date range {start_date.strftime('%d/%m/%Y')} to {end_date.strftime('%d/%m/%Y')}")
+                st.info("Please check that the date column in your order data matches the date range format.")
+                return
 
-            st.info(f"Comparing actuals from **{start_date.strftime('%d %b %Y')}** to **{end_date.strftime('%d %b %Y')}** ({num_days} days) against projected optimization results.")
+            st.success(f"✅ Filtered {len(filtered_data)} orders from raw data for the specified date range")
 
-            # Visualization
-            st.subheader("💰 Savings Scorecard")
-            mileage_savings = actual_total_km - projected_optimized_km
-            hours_savings = actual_total_hours - projected_optimized_hours
-            trucks_savings = actual_trucks_used - optimized_trucks_used
+            # Merge coordinates from aggregated data back into filtered raw data
+            # The aggregated data has lat/lng from geocoding
+            aggregated_data = st.session_state.data.copy()
+            customer_id_col = "מס' לקוח"
+            
+            if customer_id_col in aggregated_data.columns and customer_id_col in filtered_data.columns:
+                # Create a mapping of customer ID to coordinates
+                coord_map = {}
+                for idx, row in aggregated_data.iterrows():
+                    customer_id = row.get(customer_id_col)
+                    if pd.notna(customer_id) and pd.notna(row.get('lat')) and pd.notna(row.get('lng')):
+                        coord_map[customer_id] = {
+                            'lat': row['lat'],
+                            'lng': row['lng']
+                        }
+                
+                # Merge coordinates into filtered data
+                filtered_data['lat'] = filtered_data[customer_id_col].map(lambda x: coord_map.get(x, {}).get('lat') if pd.notna(x) else None)
+                filtered_data['lng'] = filtered_data[customer_id_col].map(lambda x: coord_map.get(x, {}).get('lng') if pd.notna(x) else None)
+                
+                # Count how many orders got coordinates
+                coords_count = filtered_data[['lat', 'lng']].notna().all(axis=1).sum()
+                if coords_count < len(filtered_data):
+                    st.warning(f"⚠️ Only {coords_count} of {len(filtered_data)} orders have coordinates. Orders without coordinates will be excluded from simulation.")
+            else:
+                st.warning("⚠️ Could not merge coordinates. Customer ID column may be missing.")
+                st.error("Cannot run simulation without coordinates. Please ensure data has been geocoded.")
+                return
 
-            mileage_savings_percent = (mileage_savings / actual_total_km) * 100 if actual_total_km > 0 else 0
-            hours_savings_percent = (hours_savings / actual_total_hours) * 100 if actual_total_hours > 0 else 0
+            # Filter out rows without coordinates (needed for simulation)
+            filtered_data_with_coords = filtered_data[
+                filtered_data[['lat', 'lng']].notna().all(axis=1)
+            ].copy()
 
+            if len(filtered_data_with_coords) == 0:
+                st.error("⚠️ No orders with valid coordinates found after filtering. Please ensure your data has been geocoded.")
+                return
+
+            # Run simulation on filtered data with coordinates
+            from calculations.simulation import run_historical_simulation
+            
+            with st.spinner("Running historical backtesting simulation (this may take a moment)..."):
+                simulation_results = run_historical_simulation(
+                    historical_data=filtered_data_with_coords,
+                    master_routes=st.session_state.solution['routes'],
+                    distance_matrix=st.session_state.distance_matrix,
+                    time_matrix=st.session_state.time_matrix,
+                    node_map=st.session_state.node_map,
+                    service_time_seconds=st.session_state.optimization_params['service_time_seconds'],
+                    date_col=order_date_col,
+                    customer_id_col=customer_id_col,
+                    depot=0
+                )
+            
+            st.success(f"✅ Simulation complete: {len(simulation_results)} days analyzed")
+
+            # Convert Date column to datetime for filtering
+            simulation_results['Date'] = pd.to_datetime(simulation_results['Date'])
+
+            # Add date filter
+            st.subheader("📅 Date Range Selection")
+            available_dates = sorted(simulation_results['Date'].dt.date.unique())
+            selected_dates = st.multiselect(
+                "Select dates to include in comparison",
+                options=available_dates,
+                default=available_dates,
+                format_func=lambda x: x.strftime('%d/%m/%Y')
+            )
+
+            if not selected_dates:
+                st.warning("⚠️ Please select at least one date for comparison.")
+                return
+
+            # Filter simulation results by selected dates
+            selected_date_objs = [pd.Timestamp(d) for d in selected_dates]
+            filtered_simulation = simulation_results[
+                simulation_results['Date'].dt.date.isin(selected_dates)
+            ].copy()
+
+            num_selected_days = len(filtered_simulation)
+
+            # Calculate summary file totals and daily averages
+            summary_total_km = None
+            summary_total_hours = None
+            total_days_in_summary = (end_date - start_date).days + 1
+            
+            # Check for summary metrics columns
+            if 'סהכ קמ' in df_summary.columns:
+                summary_total_km = df_summary['סהכ קמ'].sum()
+            elif 'Total KM' in df_summary.columns:
+                summary_total_km = df_summary['Total KM'].sum()
+            
+            if 'סהכ זמן נסיעה' in df_summary.columns:
+                summary_total_hours = df_summary['סהכ זמן נסיעה'].sum()
+            elif 'Total Driving Time' in df_summary.columns:
+                summary_total_hours = df_summary['Total Driving Time'].sum()
+
+            # Calculate daily averages from summary file
+            avg_actual_km_per_day = None
+            avg_actual_time_per_day = None
+            if summary_total_km is not None and total_days_in_summary > 0:
+                avg_actual_km_per_day = summary_total_km / total_days_in_summary
+            if summary_total_hours is not None and total_days_in_summary > 0:
+                avg_actual_time_per_day = summary_total_hours / total_days_in_summary
+
+            # Calculate projected and simulated totals for selected days
+            projected_actual_km = None
+            projected_actual_hours = None
+            if avg_actual_km_per_day is not None:
+                projected_actual_km = avg_actual_km_per_day * num_selected_days
+            if avg_actual_time_per_day is not None:
+                projected_actual_hours = avg_actual_time_per_day * num_selected_days
+
+            simulated_km = filtered_simulation['Total_Distance_km'].sum()
+            simulated_hours = filtered_simulation['Max_Shift_Duration_hours'].sum()
+
+            # Display comparison table
+            if projected_actual_km is not None or projected_actual_hours is not None:
+                st.subheader("💰 Comparison: Simulated vs. Projected Actuals")
+                
+                comparison_data = []
+                if projected_actual_km is not None:
+                    km_diff = simulated_km - projected_actual_km
+                    km_diff_pct = (km_diff / projected_actual_km * 100) if projected_actual_km > 0 else 0
+                    comparison_data.append({
+                        'Metric': 'Total Distance (km)',
+                        'Projected Actuals (Based on Avg)': f"{projected_actual_km:,.1f}",
+                        'Simulated': f"{simulated_km:,.1f}",
+                        'Difference': f"{km_diff:,.1f}",
+                        'Difference %': f"{km_diff_pct:.2f}%"
+                    })
+                if projected_actual_hours is not None:
+                    hours_diff = simulated_hours - projected_actual_hours
+                    hours_diff_pct = (hours_diff / projected_actual_hours * 100) if projected_actual_hours > 0 else 0
+                    comparison_data.append({
+                        'Metric': 'Total Time (hours)',
+                        'Projected Actuals (Based on Avg)': f"{projected_actual_hours:,.1f}",
+                        'Simulated': f"{simulated_hours:,.1f}",
+                        'Difference': f"{hours_diff:,.1f}",
+                        'Difference %': f"{hours_diff_pct:.2f}%"
+                    })
+                
+                if comparison_data:
+                    comp_df = pd.DataFrame(comparison_data)
+                    st.dataframe(comp_df.set_index('Metric'), width="stretch")
+                    
+                    # Show savings message
+                    if projected_actual_km is not None:
+                        km_savings = projected_actual_km - simulated_km
+                        km_savings_pct = (km_savings / projected_actual_km * 100) if projected_actual_km > 0 else 0
+                        if km_savings > 0:
+                            st.success(f"✅ Simulated routes would save {km_savings:,.1f} km ({km_savings_pct:.1f}%) compared to projected actuals")
+                        elif km_savings < 0:
+                            st.warning(f"⚠️ Simulated routes would use {abs(km_savings):,.1f} km more ({abs(km_savings_pct):.1f}%) than projected actuals")
+
+            # Fleet Utilization Comparison
+            st.subheader("🚛 Fleet Utilization Comparison")
+            
+            # System metric: Average Active_Routes from simulation
+            system_avg_trucks = filtered_simulation['Active_Routes'].mean()
+            
+            # Historical metric: Count unique route names per day from filtered raw data
+            historical_avg_trucks = None
+            route_name_col = 'שם קו'
+            
+            if route_name_col in filtered_data.columns:
+                # Filter historical data to selected dates
+                filtered_data['Date'] = pd.to_datetime(filtered_data[order_date_col], dayfirst=True, errors='coerce')
+                historical_for_selected = filtered_data[
+                    filtered_data['Date'].dt.date.isin(selected_dates)
+                ].copy()
+                
+                if len(historical_for_selected) > 0:
+                    # Group by date and count unique route names
+                    daily_route_counts = historical_for_selected.groupby(
+                        historical_for_selected['Date'].dt.date
+                    )[route_name_col].nunique()
+                    
+                    if len(daily_route_counts) > 0:
+                        historical_avg_trucks = daily_route_counts.mean()
+            
+            # Display fleet utilization metrics
+            if historical_avg_trucks is not None:
+                fleet_diff = system_avg_trucks - historical_avg_trucks
+                
+                col1, col2, col3 = st.columns(3)
+                col1.metric("System Avg Trucks", f"{system_avg_trucks:.1f}")
+                col2.metric("Historical Avg Trucks", f"{historical_avg_trucks:.1f}")
+                col3.metric("Difference", f"{fleet_diff:+.1f} trucks", 
+                           delta=f"{fleet_diff:+.1f}" if abs(fleet_diff) > 0.1 else None)
+            else:
+                st.info(f"System Average Trucks: {system_avg_trucks:.1f}")
+                st.warning("⚠️ Historical route data ('שם קו') not available for comparison.")
+
+            # Summary metrics
+            st.subheader("📈 Summary Metrics")
             col1, col2, col3 = st.columns(3)
-            col1.metric("Mileage Saved", f"{mileage_savings:,.1f} km", f"{mileage_savings_percent:.1f}%", delta_color="inverse")
-            col2.metric("Hours Saved", f"{hours_savings:,.1f} hrs", f"{hours_savings_percent:.1f}%", delta_color="inverse")
-            col3.metric("Fleet Reduction", f"{trucks_savings} Trucks", delta_color="inverse")
+            col1.metric("Selected Days", num_selected_days)
+            col2.metric("Avg Daily Distance", f"{filtered_simulation['Total_Distance_km'].mean():.1f} km")
+            col3.metric("Avg Shift Duration", f"{filtered_simulation['Max_Shift_Duration_hours'].mean():.1f} hrs")
 
-            # Charts
-            st.subheader("📊 Visual Comparison")
-            chart_data = pd.DataFrame({
-                'Category': ['Actual', 'Optimized'],
-                'Total KM': [actual_total_km, projected_optimized_km],
-                'Total Hours': [actual_total_hours, projected_optimized_hours]
-            })
+            # Check for overtime days
+            max_shift_hours = st.session_state.optimization_params['max_shift_seconds'] / 3600
+            overtime_days = filtered_simulation[filtered_simulation['Max_Shift_Duration_hours'] > max_shift_hours]
+            if len(overtime_days) > 0:
+                st.warning(f"⚠️ {len(overtime_days)} of {num_selected_days} selected days would have exceeded the maximum shift time ({max_shift_hours} hours)")
 
-            col1, col2 = st.columns(2)
-            with col1:
-                st.bar_chart(chart_data.set_index('Category')['Total KM'], use_container_width=True)
-            with col2:
-                st.bar_chart(chart_data.set_index('Category')['Total Hours'], use_container_width=True)
+            # Variance customers warning
+            total_variance_customers = filtered_simulation['Variance_Customers'].sum()
+            if total_variance_customers > 0:
+                st.info(f"ℹ️ {total_variance_customers} customer orders in selected period were not in the optimized routes (new/unknown customers).")
 
-            # Data Table
-            st.subheader("📋 Summary Table")
-            summary_df = pd.DataFrame({
-                'Metric': ['Total Mileage (km)', 'Total Driving Hours', 'Asset Utilization (Trucks)'],
-                'Actual': [f"{actual_total_km:,.1f}", f"{actual_total_hours:,.1f}", actual_trucks_used],
-                'Optimized': [f"{projected_optimized_km:,.1f}", f"{projected_optimized_hours:,.1f}", optimized_trucks_used]
-            })
-            st.table(summary_df.set_index('Metric'))
+            # Download button for filtered results
+            csv = filtered_simulation.to_csv(index=False, encoding='utf-8-sig')
+            st.download_button(
+                "💾 Download Filtered Simulation Results (CSV)",
+                csv,
+                "filtered_simulation_results.csv",
+                "text/csv",
+                key='download-filtered-simulation-csv'
+            )
 
         except Exception as e:
-            st.error(f"Error reading or processing the actuals file: {e}")
+            st.error(f"Error processing historical data: {str(e)}")
+            import traceback
+            st.code(traceback.format_exc())
             return
