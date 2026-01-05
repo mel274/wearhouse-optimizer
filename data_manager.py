@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, List, Optional, Any
 import logging
 from config import Config
-import utils
+import shared.utils as utils
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -12,7 +12,7 @@ sys.modules["openrouteservice"] = MagicMock()
 
 # Now we can safely import the app code
 from calculations.logistics import calculate_fleet_metrics
-from utils import validate_address, retry_with_backoff
+from shared.utils import validate_address, retry_with_backoff
 from exceptions import DataValidationError
 
 import unittest

@@ -6,6 +6,8 @@ import os
 from typing import Dict, Any, Optional
 from config import Config
 from geo_service import GeoService
+from calculations.fleet_service import FleetService
+from calculations.comparison_service import ComparisonService
 
 
 def setup_sidebar() -> Dict[str, Any]:
@@ -61,6 +63,8 @@ def setup_sidebar() -> Dict[str, Any]:
         'data_manager': None,  # Will be imported when needed
         'map_builder': None,   # Will be imported when needed
         'route_optimizer': None,  # Will be imported when needed
+        'fleet_service': FleetService(),
+        'comparison_service': ComparisonService(),
         'fleet_settings': {
             'big_truck_vol': big_truck_vol,
             'small_truck_vol': small_truck_vol,

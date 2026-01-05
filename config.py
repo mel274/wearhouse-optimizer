@@ -57,6 +57,12 @@ class Config:
     API_RETRY_ATTEMPTS = 3
     CACHE_MAX_SIZE = 10000
     CACHE_CLEANUP_THRESHOLD = 0.8
+
+    # OpenRouteService specific parameters
+    ORS_CONNECT_TIMEOUT = 10
+    ORS_READ_TIMEOUT = 120  # Increased from 30 to 120 seconds
+    ORS_MAX_RETRIES = 3
+    ORS_MATRIX_CHUNK_SIZE = 40  # ORS API limit is ~50 locations per request
     
     # --- GRACEFUL EXECUTION SETTINGS ---
     RATE_LIMIT_DELAY = 2.0  # Wait 2 seconds between API calls (Prevents overloading)

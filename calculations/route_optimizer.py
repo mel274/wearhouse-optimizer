@@ -9,7 +9,8 @@ from typing import List, Dict, Any, Tuple, Set
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from .types import Solution, OptimizationParams, UnservedCustomer
-from . import ors, metrics, utils
+from . import ors, metrics
+import shared.utils as utils
 from config import Config
 
 logger = logging.getLogger(__name__)

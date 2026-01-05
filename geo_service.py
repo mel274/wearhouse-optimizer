@@ -11,7 +11,7 @@ import logging
 from typing import List, Tuple, Dict, Optional, Any
 from config import Config
 from exceptions import GeocodingError, CacheError
-from utils import validate_address, validate_coordinates, decode_polyline
+from shared.utils import validate_address, validate_coordinates, decode_polyline
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -12,19 +12,10 @@ from typing import List, Dict, Any, Tuple, Optional, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from .types import MatrixData, Coords, RouteMetrics
-from .utils import decode_polyline
-from utils import retry_with_backoff
+from shared.utils import decode_polyline, retry_with_backoff
+from config import Config
 
 logger = logging.getLogger(__name__)
-
-# Default timeouts in seconds
-DEFAULT_CONNECT_TIMEOUT = 10
-DEFAULT_READ_TIMEOUT = 120  # Increased from 30 to 120 seconds
-MAX_RETRIES = 3
-
-# Matrix API chunk size - ORS API limit is ~50 locations per request
-# Using 40 to stay safely under the limit
-MATRIX_CHUNK_SIZE = 40
 
 def _compute_matrix_cache_key(locations: List[Coords]) -> str:
     """Compute a stable hash key for the given coordinates."""
@@ -33,8 +24,8 @@ def _compute_matrix_cache_key(locations: List[Coords]) -> str:
     return hashlib.sha1(coords_str.encode()).hexdigest()[:16]
 
 class ORSHandler:
-    def __init__(self, api_key: str, connect_timeout: int = DEFAULT_CONNECT_TIMEOUT, 
-                 read_timeout: int = DEFAULT_READ_TIMEOUT, max_retries: int = MAX_RETRIES):
+    def __init__(self, api_key: str, connect_timeout: int = Config.ORS_CONNECT_TIMEOUT,
+                 read_timeout: int = Config.ORS_READ_TIMEOUT, max_retries: int = Config.ORS_MAX_RETRIES):
         """
         Initialize the ORS handler with configurable timeouts and retries.
         
@@ -117,12 +108,12 @@ class ORSHandler:
         timeout = timeout or self.timeout
         
         # If locations count is small enough, use direct API call (faster)
-        if num_locations <= MATRIX_CHUNK_SIZE:
+        if num_locations <= Config.ORS_MATRIX_CHUNK_SIZE:
             logger.info(f"Fetching distance matrix for {num_locations} locations (single request)")
             return self._fetch_matrix_direct(locations, timeout, cache_file)
         
         # For large location sets, use batched approach
-        logger.info(f"Fetching distance matrix for {num_locations} locations (batched into chunks of {MATRIX_CHUNK_SIZE})")
+        logger.info(f"Fetching distance matrix for {num_locations} locations (batched into chunks of {Config.ORS_MATRIX_CHUNK_SIZE})")
         return self._fetch_matrix_batched(locations, timeout, cache_file)
     
     def _fetch_matrix_direct(self, locations: List[Coords], timeout: Tuple[float, float], 
@@ -178,7 +169,7 @@ class ORSHandler:
         """
         Fetch matrix using batched requests for large location sets.
         
-        Breaks the request into chunks of MATRIX_CHUNK_SIZE and reassembles the full matrix.
+        Breaks the request into chunks of Config.ORS_MATRIX_CHUNK_SIZE and reassembles the full matrix.
         """
         num_locations = len(locations)
         
@@ -193,17 +184,17 @@ class ORSHandler:
             'Content-Type': 'application/json'
         }
         
-        total_chunks = ((num_locations + MATRIX_CHUNK_SIZE - 1) // MATRIX_CHUNK_SIZE) ** 2
+        total_chunks = ((num_locations + Config.ORS_MATRIX_CHUNK_SIZE - 1) // Config.ORS_MATRIX_CHUNK_SIZE) ** 2
         chunk_count = 0
         
-        for source_start in range(0, num_locations, MATRIX_CHUNK_SIZE):
-            source_end = min(source_start + MATRIX_CHUNK_SIZE, num_locations)
+        for source_start in range(0, num_locations, Config.ORS_MATRIX_CHUNK_SIZE):
+            source_end = min(source_start + Config.ORS_MATRIX_CHUNK_SIZE, num_locations)
             source_chunk = locations[source_start:source_end]
             source_formatted = [[loc[1], loc[0]] for loc in source_chunk]
             
             # Step 3: Loop through destination chunks
-            for dest_start in range(0, num_locations, MATRIX_CHUNK_SIZE):
-                dest_end = min(dest_start + MATRIX_CHUNK_SIZE, num_locations)
+            for dest_start in range(0, num_locations, Config.ORS_MATRIX_CHUNK_SIZE):
+                dest_end = min(dest_start + Config.ORS_MATRIX_CHUNK_SIZE, num_locations)
                 dest_chunk = locations[dest_start:dest_end]
                 dest_formatted = [[loc[1], loc[0]] for loc in dest_chunk]
                 

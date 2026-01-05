@@ -1,7 +1,7 @@
 import streamlit as st
 import logging
 from ui_components import init_session_state, setup_sidebar
-from tabs import tab_data_upload, tab_optimization, tab_export, tab_compare_actuals
+from ui.tabs import tab_data_upload, tab_optimization, tab_export, tab_compare_actuals
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

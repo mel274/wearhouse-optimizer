@@ -1,5 +1,6 @@
 """
 Utility functions for Warehouse Location & Route Optimizer.
+Unified utilities from root utils.py and calculations/utils.py.
 """
 
 import pandas as pd
@@ -8,13 +9,14 @@ import io
 import time
 import logging
 import re
+import math
 from functools import wraps
 from config import Config
 from exceptions import DataValidationError, APIRateLimitError
 
 logger = logging.getLogger(__name__)
 
-def retry_with_backoff(max_attempts: int = Config.API_RETRY_ATTEMPTS, 
+def retry_with_backoff(max_attempts: int = Config.API_RETRY_ATTEMPTS,
                       delay: float = Config.RATE_LIMIT_DELAY):
     """Decorator for retrying API calls with exponential backoff."""
     def decorator(func: Callable) -> Callable:
@@ -29,11 +31,11 @@ def retry_with_backoff(max_attempts: int = Config.API_RETRY_ATTEMPTS,
                     if attempt == max_attempts - 1:
                         logger.error(f"API call failed after {max_attempts} attempts: {e}")
                         raise e
-                    
+
                     wait_time = delay * (2 ** attempt)
                     logger.warning(f"Attempt {attempt + 1} failed, retrying in {wait_time}s: {e}")
                     time.sleep(wait_time)
-            
+
             raise last_exception
         return wrapper
     return decorator
@@ -42,16 +44,16 @@ def validate_address(address: str) -> str:
     """Validate and sanitize address input."""
     if not address or not isinstance(address, str):
         raise DataValidationError("Address must be a non-empty string")
-    
+
     # Remove potentially harmful characters
     sanitized = re.sub(r'[<>"\';]', '', address.strip())
-    
+
     if len(sanitized) < 2:
         raise DataValidationError("Address too short after sanitization")
-    
+
     if len(sanitized) > 200:
         raise DataValidationError("Address too long")
-    
+
     logger.debug(f"Address validated: '{sanitized[:50]}...'")
     return sanitized
 
@@ -61,7 +63,7 @@ def validate_coordinates(lat: float, lng: float) -> bool:
         lat_float, lng_float = float(lat), float(lng)
     except (ValueError, TypeError):
         return False
-    
+
     return (Config.ISRAEL_LAT_MIN <= lat_float <= Config.ISRAEL_LAT_MAX and
             Config.ISRAEL_LNG_MIN <= lng_float <= Config.ISRAEL_LNG_MAX)
 
@@ -71,7 +73,7 @@ def validate_hebrew_encoding(file_buffer: Union[io.BytesIO, io.StringIO]) -> pd.
     Validate and read Hebrew-encoded Excel/CSV files with proper UTF-8 handling.
     """
     logger.info("Starting Hebrew file encoding validation")
-    
+
     try:
         # Try reading as Excel first
         if hasattr(file_buffer, 'name') and file_buffer.name.endswith(('.xlsx', '.xls')):
@@ -81,7 +83,7 @@ def validate_hebrew_encoding(file_buffer: Union[io.BytesIO, io.StringIO]) -> pd.
         else:
             # Try different encodings for CSV files
             encodings = ['utf-8', 'utf-8-sig', 'cp1255', 'iso-8859-8']
-            
+
             for encoding in encodings:
                 try:
                     file_buffer.seek(0)  # Reset buffer position
@@ -96,16 +98,16 @@ def validate_hebrew_encoding(file_buffer: Union[io.BytesIO, io.StringIO]) -> pd.
                 error_msg = "Could not read file with any supported Hebrew encoding"
                 logger.error(error_msg)
                 raise DataValidationError(error_msg)
-        
+
         # Validate Hebrew text encoding
         if df.empty:
             error_msg = "File is empty or could not be parsed"
             logger.error(error_msg)
             raise DataValidationError(error_msg)
-            
+
         logger.info(f"File validation completed successfully. Found columns: {list(df.columns)}")
         return df
-        
+
     except DataValidationError:
         raise
     except Exception as e:
@@ -130,7 +132,7 @@ def decode_polyline(polyline_str: str) -> List[Tuple[float, float]]:
     index, lat, lng = 0, 0, 0
     coordinates = []
     length = len(polyline_str)
-    
+
     try:
         while index < length:
             # Decode Latitude
