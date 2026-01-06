@@ -39,10 +39,10 @@ class Config:
 
     # Geographic restriction zones
     GUSH_DAN_BOUNDS = {
-        'min_lat': 32.02,
-        'max_lat': 32.15,
+        'min_lat': 32.00,
+        'max_lat': 32.12,
         'min_lon': 34.74,
-        'max_lon': 34.85
+        'max_lon': 34.90,
     }
 
     # Fleet defaults for volume-based calculations
@@ -51,6 +51,9 @@ class Config:
         'small_truck_vol': 27.0,
         'safety_factor': 0.7
     }
+    
+    # Customer Force (Percentile-based demand planning)
+    CUSTOMER_FORCE_PERCENTILE = 0.8  # 80th percentile for route planning
     
     # API and caching parameters
     API_TIMEOUT = 30 # Increased timeout for robustness

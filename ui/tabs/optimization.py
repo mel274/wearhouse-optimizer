@@ -32,9 +32,41 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         st.warning("Optimization requires an API Key. Please configure `OPENROUTESERVICE_API_KEY` in your environment variables to use this feature.")
         return
 
+    # Initialize services if not already done
+    from data_manager import DataManager
+    if services['data_manager'] is None:
+        services['data_manager'] = DataManager()
+    
     # Initialize route optimizer if not already done
     if services['route_optimizer'] is None:
         services['route_optimizer'] = RouteOptimizer(Config.OPENROUTESERVICE_API_KEY)
+
+    # Add Customer Force slider to sidebar
+    st.sidebar.markdown("---")
+    force_percentile = st.sidebar.slider(
+        'customer force percentile',
+        min_value=0.5,
+        max_value=1.0,
+        value=0.8,
+        step=0.05
+    )
+
+    # Recalculate customer force if raw data is available
+    if hasattr(st.session_state, 'raw_data') and st.session_state.raw_data is not None:
+        if st.session_state.data is not None:
+            try:
+                # Recalculate force metrics with the new percentile
+                updated_data = services['data_manager'].recalculate_customer_force(
+                    st.session_state.data,
+                    st.session_state.raw_data,
+                    force_percentile
+                )
+                st.session_state.data = updated_data
+            except Exception as e:
+                st.error(f"Error recalculating customer force: {str(e)}")
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"Error recalculating customer force: {e}")
 
     geocoded_data = st.session_state.data
     valid_coords = geocoded_data.dropna(subset=['lat', 'lng'])
@@ -42,7 +74,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         st.error("No geocoded data.")
         return
 
-    demand_col = 'avg_quantity'
+    demand_col = 'avg_quantity'  # This contains force_quantity (percentile-based)
 
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
@@ -146,6 +178,10 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     # Expandable Route Details
                     st.subheader("Route Details")
 
+                    # Retrieve volume limits from fleet settings
+                    small_truck_vol = services['fleet_settings']['small_truck_vol']
+                    big_truck_vol = services['fleet_settings']['big_truck_vol']
+
                     route_metrics = solution.get('route_metrics', [])
 
                     for idx, route in enumerate(solution['routes']):
@@ -164,12 +200,32 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                         else:
                             vehicle_capacity = params.get('big_capacity', big_capacity)
 
+                        # Calculate loaded volume for this route
+                        # Sum force_volume (80th percentile) for all customers on this route
+                        loaded_volume = 0.0
+                        for node_idx in route[1:-1]:  # Skip depot (first and last nodes)
+                            if node_idx > 0:  # Skip depot node
+                                customer = valid_coords.iloc[node_idx - 1]
+                                volume = customer.get('force_volume', 0)
+                                if pd.notna(volume):
+                                    loaded_volume += float(volume)
+                        
+                        # Determine truck volume capacity based on vehicle type
+                        if vehicle_type == 'Small':
+                            truck_vol_capacity = small_truck_vol
+                        else:
+                            truck_vol_capacity = big_truck_vol
+                        
+                        # Calculate volume utilization percentage
+                        vol_percent = (loaded_volume / truck_vol_capacity * 100) if truck_vol_capacity > 0 else 0.0
+                        vol_str = f" | Vol: {loaded_volume:.1f} / {truck_vol_capacity:.1f} m³ ({vol_percent:.0f}%)"
+
                         warnings = []
                         if current_load > vehicle_capacity: warnings.append("⚠️ Overloaded")
                         if r_metrics.get('duration', 0) > params['max_shift_seconds']: warnings.append("⚠️ Overtime")
                         status_str = " ".join(warnings) if warnings else "✅ OK"
 
-                        header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {current_load} | Dist: {dist_km:.1f} km | Time: {dur_str} {status_str}"
+                        header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {current_load} | Dist: {dist_km:.1f} km | Time: {dur_str}{vol_str} {status_str}"
 
                         with st.expander(header):
                             stops_data = []
@@ -181,7 +237,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                                         "ID": customer.get("מס' לקוח", ""),
                                         "Name": customer.get("שם לקוח", ""),
                                         "Address": customer.get("כתובת", ""),
-                                        "Qty": int(customer.get(demand_col, 0))
+                                        "Volume (m³)": round(customer.get('force_volume', 0), 2)  # Shows force_volume (percentile-based)
                                     })
 
                             if stops_data:
@@ -191,10 +247,41 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
                     # Global Metrics
                     m = solution['metrics']
-                    c1, c2, c3 = st.columns(3)
+                    
+                    # Calculate total volume used across all routes
+                    total_loaded_volume = 0.0
+                    total_truck_capacity = 0.0
+                    
+                    for idx, route in enumerate(solution['routes']):
+                        if len(route) <= 2: continue
+                        
+                        r_metrics = solution.get('route_metrics', [])
+                        if idx < len(r_metrics):
+                            vehicle_type = r_metrics[idx].get('vehicle_type', 'Unknown')
+                            if vehicle_type == 'Small':
+                                truck_capacity = small_truck_vol
+                            else:
+                                truck_capacity = big_truck_vol
+                            
+                            # Calculate volume for this route
+                            route_volume = 0.0
+                            for node_idx in route[1:-1]:
+                                if node_idx > 0:
+                                    customer = valid_coords.iloc[node_idx - 1]
+                                    volume = customer.get('force_volume', 0)
+                                    if pd.notna(volume):
+                                        route_volume += float(volume)
+                            
+                            total_loaded_volume += route_volume
+                            total_truck_capacity += truck_capacity
+                    
+                    total_vol_percent = (total_loaded_volume / total_truck_capacity * 100) if total_truck_capacity > 0 else 0.0
+                    
+                    c1, c2, c3, c4 = st.columns(4)
                     c1.metric("Total Distance", f"{m['total_distance']/1000:.1f} km")
                     c2.metric("Total Time", f"{m['total_time']/3600:.1f} h")
                     c3.metric("Vehicles Used", m['num_vehicles_used'])
+                    c4.metric("Total Volume Used", f"{total_loaded_volume:.1f} / {total_truck_capacity:.1f} m³ ({total_vol_percent:.0f}%)")
 
                 else:
                     st.error("Optimization failed.")

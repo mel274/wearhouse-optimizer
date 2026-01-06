@@ -69,7 +69,7 @@ class MapBuilder:
                     <div style="font-family: Arial, sans-serif; font-size: 12px;">
                         <strong>{row.get('שם לקוח', 'N/A')}</strong><br>
                         Address: {row.get('כתובת', 'N/A')}<br>
-                        Avg Qty: {round(row.get('avg_quantity', 0), 1)}
+                        Volume: {round(row.get('force_volume', 0), 2)} m³
                     </div>
                     """
                     
@@ -242,7 +242,7 @@ class MapBuilder:
             <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
             Stop: {stop_num}<br>
             Route: {route_num}<br>
-            Avg Qty: {round(customer.get('avg_quantity', 0), 1)}
+            Volume: {round(customer.get('force_volume', 0), 2)} m³
         </div>
         """
         
@@ -266,7 +266,7 @@ class MapBuilder:
             <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
             <span style="font-weight: bold;">⚠️ COULD NOT SERVE</span><br>
             Reason: {reason}<br>
-            Avg Qty: {round(customer.get('avg_quantity', 0), 1)}
+            Volume: {round(customer.get('force_volume', 0), 2)} m³
         </div>
         """
         

@@ -142,14 +142,13 @@ class GeoService:
             if sanitized_address in self.geocode_cache:
                 return self.geocode_cache[sanitized_address]
             
-            # Priority: Nominatim -> ORS -> GovMap -> Photon -> City -> Israel DB
+            # Priority: Nominatim -> ORS -> GovMap -> Photon -> City
             services_order = [
                 ("Nominatim", self._geocode_nominatim),
                 ("OpenRouteService", self._geocode_ors),
                 ("GovMap Israel", self._geocode_govmap),
                 ("Photon", self._geocode_photon),
-                ("City-Only", self._geocode_city_only),
-                ("Israel Locations DB", self._geocode_israel_db)
+                ("City-Only", self._geocode_city_only)
             ]
 
             for _, geocoding_func in services_order:
@@ -227,20 +226,4 @@ class GeoService:
             city_candidate = parts[0]
             if len(city_candidate) > 2: return self._geocode_nominatim(city_candidate)
         except Exception: pass
-        return None, None
-
-    def _geocode_israel_db(self, address: str) -> Tuple[Optional[float], Optional[float]]:
-        db = {
-            'תל אביב': (32.0853, 34.7818), 'tel aviv': (32.0853, 34.7818),
-            'ירושלים': (31.7683, 35.2137), 'jerusalem': (31.7683, 35.2137),
-            'חיפה': (32.7940, 34.9896), 'haifa': (32.7940, 34.9896),
-            'ראשון לציון': (31.9730, 34.7925), 'פתח תקווה': (32.0840, 34.8878),
-            'אשדוד': (31.8044, 34.6553), 'נתניה': (32.3215, 34.8532),
-            'באר שבע': (31.2518, 34.7913), 'bnei brak': (32.0849, 34.8352),
-            'בני ברק': (32.0849, 34.8352), 'holon': (32.0158, 34.7874),
-            'חולון': (32.0158, 34.7874)
-        }
-        normalized_addr = address.lower().strip()
-        for city, coords in db.items():
-            if city in normalized_addr: return coords
         return None, None

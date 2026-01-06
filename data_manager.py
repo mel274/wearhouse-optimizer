@@ -85,8 +85,8 @@ class DataManager:
         if volume_col:
             logger.info(f"Volume column '{volume_col}' found. Calculating total volume.")
             df[volume_col] = pd.to_numeric(df[volume_col], errors='coerce').fillna(0)
-            # Convert Liters to Cubic Meters (1 L = 0.001 m^3)
-            df['total_volume_m3'] = (df[volume_col] * df['כמות']) / 1000
+            # Volume is already in Cubic Meters (m³), so multiply unit volume by quantity
+            df['total_volume_m3'] = df[volume_col] * df['כמות']
         else:
             logger.warning(f"No volume column found ('{volume_col_hebrew}' or '{volume_col_english}'). Defaulting total volume to 0.")
             df['total_volume_m3'] = 0
@@ -102,7 +102,7 @@ class DataManager:
     def aggregate_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Aggregate raw delivery data by customer (one row per customer).
-        Calculates average quantity per visit.
+        Calculates Customer Force (80th percentile) for route planning.
         """
         try:
             # Group by customer
@@ -112,7 +112,51 @@ class DataManager:
             if missing_group_cols:
                 raise ValueError(f"Missing group columns: {missing_group_cols}")
             
-            # Define aggregation operations
+            # Step 1: Daily Aggregation - Group by Customer + Date to get daily order sizes
+            daily_group_cols = ['מס\' לקוח', 'תאריך אספקה']
+            daily_agg_ops = {
+                'כמות': 'sum'
+            }
+            if 'total_volume_m3' in df.columns:
+                daily_agg_ops['total_volume_m3'] = 'sum'
+            
+            daily_orders = df.groupby(daily_group_cols, as_index=False).agg(daily_agg_ops)
+            logger.info(f"Created daily order aggregation: {len(daily_orders)} customer-date pairs")
+            
+            # Step 2: Calculate Force (Percentile) - Group by Customer and calculate percentile
+            percentile_value = Config.CUSTOMER_FORCE_PERCENTILE * 100
+            
+            def calculate_percentile(sorted_array, percentile):
+                """Calculate percentile, handling edge cases."""
+                if len(sorted_array) == 0:
+                    return 0.0
+                if len(sorted_array) == 1:
+                    return float(sorted_array[0])
+                return float(np.percentile(sorted_array, percentile, method='linear'))
+            
+            # Use apply() instead of agg() to ensure proper calculation
+            def calc_force_metrics(group):
+                """Calculate force metrics for a customer group."""
+                # Sort the daily values in ascending order (growing up series)
+                sorted_quantities = np.sort(group['כמות'].values)
+                
+                result = {
+                    'force_quantity': calculate_percentile(sorted_quantities, percentile_value)
+                }
+                
+                if 'total_volume_m3' in group.columns:
+                    sorted_volumes = np.sort(group['total_volume_m3'].values)
+                    result['force_volume'] = calculate_percentile(sorted_volumes, percentile_value)
+                else:
+                    result['force_volume'] = 0.0
+                
+                return pd.Series(result)
+            
+            force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics).reset_index()
+            
+            logger.info(f"Calculated force metrics for {len(force_metrics)} customers using {percentile_value}th percentile")
+            
+            # Step 3: Main aggregation (for other metrics)
             agg_ops = {
                 'תאריך אספקה': 'nunique',
                 'כמות': 'sum',
@@ -121,7 +165,7 @@ class DataManager:
             if 'total_volume_m3' in df.columns:
                 agg_ops['total_volume_m3'] = 'sum'
 
-            # Perform aggregation
+            # Perform main aggregation
             aggregated = df.groupby(group_cols, as_index=False).agg(agg_ops)
             
             # Rename columns
@@ -131,20 +175,123 @@ class DataManager:
                 'שם קו': 'current_route'
             })
             
-            # --- NEW: Calculate Average Quantity per Visit ---
-            # This is what we will use for daily route planning
-            aggregated['avg_quantity'] = aggregated['total_quantity'] / aggregated['num_visits']
+            # Step 4: Merge Force metrics back into aggregated dataframe
+            merge_cols = ['מס\' לקוח', 'force_quantity', 'force_volume']
+            aggregated = aggregated.merge(
+                force_metrics[merge_cols],
+                on='מס\' לקוח',
+                how='left'
+            )
+            
+            # Fill missing force values (shouldn't happen, but defensive)
+            aggregated['force_quantity'] = aggregated['force_quantity'].fillna(0)
+            aggregated['force_volume'] = aggregated['force_volume'].fillna(0)
+            
+            # Use force_quantity as avg_quantity for seamless integration with existing code
+            aggregated['avg_quantity'] = aggregated['force_quantity']
+            
+            # Also keep the traditional average for reference
+            aggregated['avg_quantity_traditional'] = aggregated['total_quantity'] / aggregated['num_visits']
             
             # Add coordinate columns (will be populated later)
             aggregated['lat'] = None
             aggregated['lng'] = None
             
-            logger.info(f"Aggregated {len(df)} items to {len(aggregated)} customers")
+            logger.info(f"Aggregated {len(df)} items to {len(aggregated)} customers using {percentile_value}th percentile force")
             return aggregated
             
         except Exception as e:
             logger.error(f"Error aggregating data: {e}")
             raise ValueError(f"שגיאה באגרגציה של הנתונים: {str(e)}")
+    
+    def recalculate_customer_force(self, aggregated_df: pd.DataFrame, raw_df: pd.DataFrame, percentile: float) -> pd.DataFrame:
+        """
+        Recalculate Customer Force metrics based on a percentile value.
+        
+        Args:
+            aggregated_df: The aggregated customer dataframe (with existing force metrics)
+            raw_df: The raw delivery data (before aggregation)
+            percentile: The percentile value (0.0 to 1.0) to use for force calculation
+            
+        Returns:
+            Updated aggregated dataframe with new force metrics
+        """
+        try:
+            # Step 1: Daily Aggregation - Group by Customer ID and Date to get daily order sizes
+            daily_group_cols = ['מס\' לקוח', 'תאריך אספקה']
+            daily_agg_ops = {
+                'כמות': 'sum'
+            }
+            if 'total_volume_m3' in raw_df.columns:
+                daily_agg_ops['total_volume_m3'] = 'sum'
+            
+            daily_orders = raw_df.groupby(daily_group_cols, as_index=False).agg(daily_agg_ops)
+            logger.info(f"Recalculating force: {len(daily_orders)} customer-date pairs")
+            
+            # Step 2: Calculate New Percentile - Group by Customer and calculate percentile
+            percentile_value = percentile * 100
+            
+            def calculate_percentile(sorted_array, pct):
+                """Calculate percentile, handling edge cases."""
+                if len(sorted_array) == 0:
+                    return 0.0
+                if len(sorted_array) == 1:
+                    return float(sorted_array[0])
+                return float(np.percentile(sorted_array, pct, method='linear'))
+            
+            # Use apply() instead of agg() to ensure proper calculation
+            def calc_force_metrics(group):
+                """Calculate force metrics for a customer group."""
+                # Sort the daily values in ascending order (growing up series)
+                sorted_quantities = np.sort(group['כמות'].values)
+                
+                result = {
+                    'force_quantity': calculate_percentile(sorted_quantities, percentile_value)
+                }
+                
+                if 'total_volume_m3' in group.columns:
+                    sorted_volumes = np.sort(group['total_volume_m3'].values)
+                    result['force_volume'] = calculate_percentile(sorted_volumes, percentile_value)
+                else:
+                    result['force_volume'] = 0.0
+                
+                return pd.Series(result)
+            
+            force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics).reset_index()
+            
+            logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using {percentile_value}th percentile")
+            
+            # Step 3: Merge new force metrics into aggregated dataframe
+            # Create a copy to avoid modifying the original
+            updated_df = aggregated_df.copy()
+            
+            # Drop existing force columns if they exist (we'll replace them)
+            if 'force_quantity' in updated_df.columns:
+                updated_df = updated_df.drop(columns=['force_quantity'])
+            if 'force_volume' in updated_df.columns:
+                updated_df = updated_df.drop(columns=['force_volume'])
+            
+            # Merge on customer ID
+            merge_cols = ['מס\' לקוח', 'force_quantity', 'force_volume']
+            updated_df = updated_df.merge(
+                force_metrics[merge_cols],
+                on='מס\' לקוח',
+                how='left'
+            )
+            
+            # Fill missing force values (shouldn't happen, but defensive)
+            updated_df['force_quantity'] = updated_df['force_quantity'].fillna(0)
+            updated_df['force_volume'] = updated_df['force_volume'].fillna(0)
+            
+            # Overwrite avg_quantity with the new force_quantity
+            updated_df['avg_quantity'] = updated_df['force_quantity']
+            
+            logger.info(f"Updated customer force metrics with {percentile_value}th percentile")
+            return updated_df
+            
+        except Exception as e:
+            logger.error(f"Error recalculating customer force: {e}")
+            raise ValueError(f"שגיאה בחישוב מחדש של Customer Force: {str(e)}")
     
     def calculate_center_of_gravity(self, df: pd.DataFrame) -> Dict[str, Optional[float]]:
         """Calculate weighted center of gravity."""
