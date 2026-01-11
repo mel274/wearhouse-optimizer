@@ -1,6 +1,6 @@
 """
 Map visualization service for warehouse optimization and route planning.
-Version: 2.0 (Failed Customer Support)
+Version: 2.1 (Updated Colors - High Contrast)
 """
 
 import folium
@@ -18,19 +18,24 @@ class MapBuilder:
     
     def __init__(self):
         """Initialize MapBuilder."""
-        self.colors = ['red', 'blue', 'green', 'purple', 'orange', 
-                      'darkred', 'lightred', 'beige', 'darkblue', 'darkgreen',
-                      'cadetblue', 'pink', 'gray', 'black']
+        # UPDATED COLOR PALETTE:
+        # 1. Removed invisible colors ('lightred', 'beige')
+        # 2. Added distinct Hex codes for "colored dots"
+        self.colors = [
+            'red', 'blue', 'green', 'purple', 'orange', 
+            'darkred', 'darkblue', 'darkgreen',
+            'cadetblue', 'pink', 'gray', 'black',
+            '#e6194b', '#3cb44b', '#ffe119', '#4363d8', '#f58231', 
+            '#911eb4', '#46f0f0', '#f032e6', '#bcf60c', '#fabebe', 
+            '#008080', '#e6beff', '#9a6324', '#fffac8', '#800000', 
+            '#aaffc3', '#808000', '#ffd8b1', '#000075', '#808080', 
+            '#ffffff', '#000000'
+        ]
     
     def create_phase1_map(self, df: pd.DataFrame, cog: Optional[Dict[str, float]]) -> folium.Map:
         """
         Create Phase 1 map showing customers and warehouse location (if provided).
         Customers are shown as small fixed dots.
-        
-        Args:
-            df: DataFrame with customer data including lat/lng columns
-            cog: Optional dictionary with 'lat' and 'lng' keys for warehouse location.
-                 If None, no warehouse marker will be displayed.
         """
         try:
             # Center map on warehouse or first customer
@@ -128,6 +133,7 @@ class MapBuilder:
             for route_idx, route in enumerate(routes):
                 if len(route) <= 1: continue
                 
+                # Cycle through colors if we have more routes than colors
                 color = self.colors[route_idx % len(self.colors)]
                 
                 # Check for pre-calculated polylines in route metrics
@@ -136,27 +142,23 @@ class MapBuilder:
                     metrics = route_metrics[route_idx]
                     polylines = metrics.get('polylines', [])
                     if polylines and len(polylines) > 0:
-                        # polylines is a list of coordinate lists, use the first one (full route)
                         route_polylines = polylines[0]
                 
                 # Add stop markers for all stops in the route
-                stop_counter = 0  # Track customer stops (excluding depot)
+                stop_counter = 0  
                 for i in range(len(route)):
                     curr_node_idx = route[i]
                     if curr_node_idx == 0:
-                        # Skip warehouse marker (already added at the beginning)
                         continue
                     else:
                         if curr_node_idx - 1 < len(locations_df):
                             cust = locations_df.iloc[curr_node_idx - 1]
                             curr_coords = (cust['lat'], cust['lng'])
-                            # Increment stop counter (first customer = stop 1, second = stop 2, etc.)
                             stop_counter += 1
                             self._add_stop_marker(m, cust, curr_coords, stop_counter, route_idx + 1, color)
                 
-                # Draw route path using pre-calculated polylines if available
+                # Draw route path
                 if route_polylines:
-                    # Use pre-calculated geometry from optimization
                     folium.PolyLine(
                         locations=route_polylines,
                         color=color,
@@ -165,7 +167,7 @@ class MapBuilder:
                         popup=f'<div>Route {route_idx + 1}</div>'
                     ).add_to(m)
                 else:
-                    # Fallback: build path segment by segment
+                    # Fallback path construction
                     full_route_path = []
                     for i in range(len(route)):
                         curr_node_idx = route[i]
@@ -178,7 +180,6 @@ class MapBuilder:
                             else:
                                 continue
                         
-                        # Connect to next node
                         if i < len(route) - 1:
                             next_node_idx = route[i+1]
                             if next_node_idx == 0:
@@ -190,7 +191,6 @@ class MapBuilder:
                                 else:
                                     continue
 
-                            # Try to get polyline from geo_service if available
                             if geo_service:
                                 try:
                                     segment_points = geo_service.get_route_polyline(curr_coords, next_coords)
@@ -199,13 +199,10 @@ class MapBuilder:
                                     else:
                                         full_route_path.extend([curr_coords, next_coords])
                                 except Exception:
-                                    # Fallback to straight line if geo_service fails
                                     full_route_path.extend([curr_coords, next_coords])
                             else:
-                                # No geo_service, use straight line
                                 full_route_path.extend([curr_coords, next_coords])
                     
-                    # Draw polyline for route (fallback method)
                     if full_route_path:
                         folium.PolyLine(
                             locations=full_route_path,
@@ -215,7 +212,7 @@ class MapBuilder:
                             popup=f'<div>Route {route_idx + 1}</div>'
                         ).add_to(m)
 
-            # 2. Process Unserved Customers (Failed)
+            # 2. Process Unserved Customers
             unserved_list = solution.get('unserved', [])
             for unserved in unserved_list:
                 u_idx = unserved['id']
@@ -236,7 +233,7 @@ class MapBuilder:
             raise
 
     def _add_stop_marker(self, m, customer, coords, stop_num, route_num, color):
-        """Helper to add a numbered marker for a stop."""
+        """Helper to add a numbered marker for a stop with colored dot."""
         popup_html = f"""
         <div style="font-family: Arial, sans-serif;">
             <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
@@ -246,6 +243,7 @@ class MapBuilder:
         </div>
         """
         
+        # Using DivIcon to create a colored dot marker
         folium.Marker(
             location=coords,
             popup=folium.Popup(popup_html, max_width=300),
@@ -253,7 +251,8 @@ class MapBuilder:
                 html=f'<div style="background-color: {color}; color: white; '
                      f'border-radius: 50%; width: 24px; height: 24px; '
                      f'display: flex; align-items: center; justify-content: center; '
-                     f'font-weight: bold; font-size: 11px; border: 2px solid white; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">{stop_num}</div>',
+                     f'font-weight: bold; font-size: 11px; border: 2px solid white; '
+                     f'box-shadow: 2px 2px 5px rgba(0,0,0,0.3); text-shadow: 0px 0px 2px #000;">{stop_num}</div>',
                 icon_size=(24, 24),
                 icon_anchor=(12, 12)
             )

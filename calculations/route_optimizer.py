@@ -101,6 +101,12 @@ class RouteOptimizer:
             logger.info("Phase 1: Solving with OR-Tools...")
             solution = self._solve_with_ortools(data, coords, locations, params)
             
+            # Store matrix data in solution for reuse (avoid duplicate API calls)
+            solution['matrix_data'] = {
+                'distances': matrix_data['distances'],
+                'durations': matrix_data['durations']
+            }
+            
             return solution
 
         except Exception as e:

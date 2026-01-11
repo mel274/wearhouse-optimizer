@@ -5,6 +5,7 @@ Handles route optimization and fleet capacity calculations.
 import streamlit as st
 import pandas as pd
 import numpy as np
+import logging
 from typing import Dict, Any, Optional
 from config import Config
 from calculations.route_optimizer import RouteOptimizer
@@ -12,6 +13,8 @@ from calculations.simulation import create_node_map
 from visualizer import MapBuilder
 from exceptions import DataValidationError, GeocodingError, APIRateLimitError
 import shared.utils as utils
+
+logger = logging.getLogger(__name__)
 
 
 def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
@@ -148,11 +151,18 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 st.session_state.solution = solution
 
                 # Store matrices and node map for historical simulation
-                # This will hit the cache (matrices were fetched during optimization)
-                matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
-
-                st.session_state.distance_matrix = matrix_data['distances']
-                st.session_state.time_matrix = matrix_data['durations']
+                # Reuse matrix data from solution to avoid duplicate API calls
+                if 'matrix_data' in solution:
+                    # Use matrix data already fetched during optimization
+                    matrix_data = solution['matrix_data']
+                    st.session_state.distance_matrix = matrix_data['distances']
+                    st.session_state.time_matrix = matrix_data['durations']
+                else:
+                    # Fallback: fetch if not in solution (shouldn't happen, but defensive)
+                    logger.warning("Matrix data not found in solution, fetching from API")
+                    matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
+                    st.session_state.distance_matrix = matrix_data['distances']
+                    st.session_state.time_matrix = matrix_data['durations']
                 st.session_state.node_map = create_node_map(valid_coords)
                 st.session_state.optimization_params = params
                 st.session_state.valid_coords_for_simulation = valid_coords

@@ -152,7 +152,7 @@ class DataManager:
                 
                 return pd.Series(result)
             
-            force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics).reset_index()
+            force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics, include_groups=False).reset_index()
             
             logger.info(f"Calculated force metrics for {len(force_metrics)} customers using {percentile_value}th percentile")
             
@@ -257,7 +257,7 @@ class DataManager:
                 
                 return pd.Series(result)
             
-            force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics).reset_index()
+            force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics, include_groups=False).reset_index()
             
             logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using {percentile_value}th percentile")
             

@@ -26,6 +26,11 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
     if not hasattr(st.session_state, 'distance_matrix') or not hasattr(st.session_state, 'time_matrix'):
         st.warning("Simulation data not available. Please run optimization again to enable historical backtesting.")
         return
+    
+    # Check if optimization params are available
+    if not hasattr(st.session_state, 'optimization_params') or st.session_state.optimization_params is None:
+        st.warning("Optimization parameters not available. Please run optimization again.")
+        return
 
     # Check if main order data is available
     if st.session_state.data is None:
@@ -113,7 +118,7 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
             distance_matrix=st.session_state.distance_matrix,
             time_matrix=st.session_state.time_matrix,
             node_map=st.session_state.node_map,
-            service_time_seconds=st.session_state.optimization_params['service_time_seconds'],
+            service_time_seconds=st.session_state.optimization_params.get('service_time_seconds', 900),
             date_col=order_date_col,
             customer_id_col="מס' לקוח",
             depot=0
