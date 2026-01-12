@@ -13,6 +13,16 @@ logger = logging.getLogger(__name__)
 def main() -> None:
     """Main application entry point."""
     st.set_page_config(layout="wide", page_title="Warehouse Optimizer")
+
+    # Hide the "Link" anchor button on headers
+    st.markdown("""
+        <style>
+        [data-testid="stHeaderAction"] {
+            display: none !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
     init_session_state()
     services = setup_sidebar()
     st.title("Warehouse Location & Route Optimizer")

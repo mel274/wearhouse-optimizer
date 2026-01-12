@@ -95,9 +95,9 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
     small_capacity = capacities['small_capacity']
     big_capacity = capacities['big_capacity']
 
-    # Define fleet composition (default: 6 Small, 12 Big)
-    num_small_trucks = 6
-    num_big_trucks = 12
+    # Define fleet composition from UI inputs
+    num_big_trucks = services.get('num_big_trucks', 12)
+    num_small_trucks = services.get('num_small_trucks', 6)
     total_fleet_size = num_small_trucks + num_big_trucks
 
     if st.button("Run Optimization", type="primary"):
@@ -136,7 +136,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     'num_big_trucks': num_big_trucks,
                     'small_capacity': small_capacity,
                     'big_capacity': big_capacity,
-                    'max_shift_seconds': services['max_shift_hours'] * 3600,
+                    'max_shift_seconds': int(round(services['max_shift_hours'] * 3600)),
                     'service_time_seconds': services['service_time_minutes'] * 60
                 }
 

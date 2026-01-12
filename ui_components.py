@@ -38,13 +38,29 @@ def setup_sidebar() -> Dict[str, Any]:
         st.session_state.geo_service = None
 
     st.sidebar.subheader("Fleet Parameters")
-    fleet_size = st.sidebar.slider(
-        "Max Fleet Size (12 Big + 6 Small)",
-        1, 50, Config.DEFAULT_FLEET_SIZE,
-        help="The solver will try to use fewer trucks if possible."
-    )
-    max_shift_hours = st.sidebar.slider("Max Shift (Hours)", 1, 24, Config.MAX_SHIFT_HOURS)
-    service_time_minutes = st.sidebar.slider("Service Time (Min)", 5, 60, Config.SERVICE_TIME_MINUTES)
+
+    # Fleet Composition
+    st.sidebar.subheader("Fleet Composition")
+    fleet_cols = st.sidebar.columns(2)
+
+    with fleet_cols[0]:
+        num_big_trucks = st.number_input("Big Trucks", 1, 12, 12, key="big_trucks")
+
+    with fleet_cols[1]:
+        num_small_trucks = st.number_input("Small Trucks", 1, 6, 6, key="small_trucks")
+    # Max Shift Duration Selector
+    st.sidebar.subheader("Max Shift Duration")
+    duration_cols = st.sidebar.columns([1, 1])
+
+    with duration_cols[0]:
+        hours = st.number_input("Hours", 1, 24, Config.MAX_SHIFT_HOURS, key="shift_hours")
+
+    with duration_cols[1]:
+        minutes_options = [0, 10, 20, 30, 40, 50]
+        minutes = st.selectbox("Minutes", minutes_options, index=0, format_func=lambda x: f"{x:02d} min", key="shift_minutes")
+
+    max_shift_hours = hours + (minutes / 60.0)
+    service_time_minutes = st.sidebar.number_input("Service Time (Minutes)", 1, 60, Config.SERVICE_TIME_MINUTES)
 
     st.sidebar.subheader("Volume & Logistics")
     big_truck_vol = st.sidebar.number_input(
@@ -57,7 +73,8 @@ def setup_sidebar() -> Dict[str, Any]:
 
     return {
         'warehouse_address': warehouse_address,
-        'fleet_size': fleet_size,
+        'num_big_trucks': num_big_trucks,
+        'num_small_trucks': num_small_trucks,
         'max_shift_hours': max_shift_hours,
         'service_time_minutes': service_time_minutes,
         'data_manager': None,  # Will be imported when needed

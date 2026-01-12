@@ -157,6 +157,9 @@ class RouteOptimizer:
         
         # Set arc cost evaluator
         routing.SetArcCostEvaluatorOfAllVehicles(distance_callback_index)
+
+        # Set fixed cost per vehicle to enforce fleet size minimization (Stage 2 priority)
+        routing.SetFixedCostOfAllVehicles(Config.VEHICLE_FIXED_COST)
         
         # Time callback - includes service time when leaving customer nodes
         # Service time is added when leaving a customer, but NOT when leaving the depot
@@ -229,7 +232,7 @@ class RouteOptimizer:
         )
         
         # Add disjunctions (penalties for unassigned nodes)
-        penalty_value = 10**6  # Large penalty to encourage serving customers
+        penalty_value = Config.UNSERVED_PENALTY  # Penalty for not serving customers
         for node in range(1, num_nodes):  # Skip depot (node 0)
             routing.AddDisjunction([manager.NodeToIndex(node)], penalty_value)
         
@@ -252,7 +255,7 @@ class RouteOptimizer:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 5  # 5 second time limit
+        search_parameters.time_limit.seconds = 60  # 60 second time limit
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")

@@ -37,8 +37,7 @@ def tab_export() -> None:
                             'Stop Sequence': stop_seq,
                             'Customer ID': str(customer.get("מס' לקוח", "")),
                             'Customer Name': customer.get('שם לקוח', ''),
-                            'Address': customer.get('כתובת', ''),
-                            'Quantity': int(customer.get('total_quantity', 0))
+                            'Address': customer.get('כתובת', '')
                         })
 
             if not routes_data:

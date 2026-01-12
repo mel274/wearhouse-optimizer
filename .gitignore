@@ -4,7 +4,7 @@ __pycache__/
 *.pyd
 *.pyo
 
-# Virtual environmentenv/
+# Virtual environment 
 .venv/
 
 # Editor directories and files

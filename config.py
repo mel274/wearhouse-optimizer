@@ -51,6 +51,14 @@ class Config:
         'small_truck_vol': 27.0,
         'safety_factor': 0.7
     }
+
+    # --- OPTIMIZATION COSTS ---
+    # Strict priority hierarchy enforcement:
+    # Stage 1 (Highest): Serve ALL customers (Penalty: 10,000,000)
+    # Stage 2 (Middle): Minimize the number of trucks (Cost: 1,000,000 per truck)
+    # Stage 3 (Lowest): Minimize total kilometers (Cost: 1 per meter)
+    UNSERVED_PENALTY = 10000000  # Penalty for not serving a customer
+    VEHICLE_FIXED_COST = 1000000  # Fixed cost per vehicle used
     
     # Customer Force (Percentile-based demand planning)
     CUSTOMER_FORCE_PERCENTILE = 0.8  # 80th percentile for route planning
