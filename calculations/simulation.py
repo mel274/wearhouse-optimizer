@@ -140,11 +140,12 @@ def run_historical_simulation(
     service_time_seconds: int,
     date_col: str = 'תאריך אספקה',
     customer_id_col: str = "מס' לקוח",
+    quantity_col: str = 'כמות',
     depot: int = 0
 ) -> pd.DataFrame:
     """
     Run backtesting simulation on historical data.
-    
+
     Args:
         historical_data: DataFrame with historical orders (must have date and customer ID columns)
         master_routes: List of optimized routes (each route is list of matrix indices)
@@ -154,50 +155,55 @@ def run_historical_simulation(
         service_time_seconds: Service time per stop in seconds
         date_col: Column name containing dates
         customer_id_col: Column name containing customer IDs
+        quantity_col: Column name containing quantity/volume data
         depot: Matrix index of depot (usually 0)
-        
+
     Returns:
-        DataFrame with daily metrics: Date, Total_Distance_km, Max_Shift_Duration_hours, 
-        Fleet_Utilization_pct, Active_Customers, Variance_Customers
+        DataFrame with daily metrics: Date, Total_Distance_km, Max_Shift_Duration_hours,
+        Fleet_Utilization_pct, Active_Customers, Variance_Customers, Route_Breakdown
     """
     logger.info(f"Starting historical simulation for {len(historical_data)} historical records")
-    
+
     # Parse dates if needed
     if historical_data[date_col].dtype == 'object':
         historical_data[date_col] = pd.to_datetime(historical_data[date_col], dayfirst=True, errors='coerce')
-    
+
+    # Create reverse node map (matrix index -> customer ID) for load calculations
+    reverse_node_map = {v: k for k, v in node_map.items()}
+
     # Group by date
     daily_results = []
     unique_dates = historical_data[date_col].dropna().unique()
-    
+
     logger.info(f"Processing {len(unique_dates)} unique dates")
-    
+
     for date in sorted(unique_dates):
         # Get active customers for this date
         day_data = historical_data[historical_data[date_col] == date]
         active_customer_ids = set(day_data[customer_id_col].dropna().unique())
-        
+
         # Convert customer IDs to matrix indices
         active_nodes = set()
         variance_customers = []
-        
+
         for customer_id in active_customer_ids:
             if customer_id in node_map:
                 active_nodes.add(node_map[customer_id])
             else:
                 # Customer not in master routes (variance/ghost customer)
                 variance_customers.append(customer_id)
-        
+
         # Calculate metrics for each master route (sub-routes)
         daily_total_distance = 0.0
         daily_max_duration = 0.0
         daily_total_stops = 0
         active_routes = 0
-        
-        for master_route in master_routes:
+        route_breakdown = []
+
+        for route_idx, master_route in enumerate(master_routes):
             # Create sub-route for this date
             sub_route = create_sub_route(master_route, active_nodes, depot)
-            
+
             # Only process routes with at least one customer stop
             if len(sub_route) > 2:  # More than just [depot, depot]
                 metrics = calculate_route_metrics(
@@ -207,15 +213,37 @@ def run_historical_simulation(
                     service_time_seconds,
                     depot
                 )
-                
+
+                # Calculate total load for this route
+                total_load = 0.0
+                for node in sub_route:
+                    if node != depot and node in reverse_node_map:
+                        customer_id = reverse_node_map[node]
+                        customer_orders = day_data[day_data[customer_id_col] == customer_id]
+                        if not customer_orders.empty:
+                            # Sum quantity for this customer on this date
+                            customer_quantity = customer_orders[quantity_col].sum()
+                            if pd.notna(customer_quantity):
+                                total_load += float(customer_quantity)
+
+                # Add granular route metrics
+                route_breakdown.append({
+                    "route_id": route_idx,
+                    "num_stops": metrics['num_stops'],
+                    "total_load": total_load,
+                    "distance_meters": metrics['distance'],
+                    "duration_seconds": metrics['duration']
+                })
+
+                # Aggregate daily totals
                 daily_total_distance += metrics['distance']
                 daily_max_duration = max(daily_max_duration, metrics['duration'])
                 daily_total_stops += metrics['num_stops']
                 active_routes += 1
-        
+
         # Calculate fleet utilization (percentage of routes used)
         fleet_utilization = (active_routes / len(master_routes) * 100) if master_routes else 0
-        
+
         # Store daily results
         daily_results.append({
             'Date': date,
@@ -225,7 +253,8 @@ def run_historical_simulation(
             'Active_Customers': len(active_nodes),
             'Variance_Customers': len(variance_customers),
             'Total_Stops': daily_total_stops,
-            'Active_Routes': active_routes
+            'Active_Routes': active_routes,
+            'Route_Breakdown': route_breakdown
         })
     
     # Create results DataFrame
