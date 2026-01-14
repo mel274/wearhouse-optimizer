@@ -155,8 +155,22 @@ class RouteOptimizer:
         
         distance_callback_index = routing.RegisterTransitCallback(distance_callback)
         
+        # Cost callback - weighted combination of distance and time
+        def cost_callback(from_index: int, to_index: int) -> int:
+            """
+            Returns weighted cost: (Distance * 1.0) + (Time * 1.0).
+            Uses travel time only (not service time) since service time is fixed per customer.
+            """
+            from_node = manager.IndexToNode(from_index)
+            to_node = manager.IndexToNode(to_index)
+            distance = int(data['distance_matrix'][from_node][to_node])
+            travel_time = int(data['time_matrix'][from_node][to_node])
+            return int(distance * 1.0 + travel_time * 1.0)
+        
+        cost_callback_index = routing.RegisterTransitCallback(cost_callback)
+        
         # Set arc cost evaluator
-        routing.SetArcCostEvaluatorOfAllVehicles(distance_callback_index)
+        routing.SetArcCostEvaluatorOfAllVehicles(cost_callback_index)
 
         # Set fixed cost per vehicle to enforce fleet size minimization (Stage 2 priority)
         routing.SetFixedCostOfAllVehicles(Config.VEHICLE_FIXED_COST)
@@ -198,6 +212,10 @@ class RouteOptimizer:
             True,  # start cumul to zero
             "Time"
         )
+        
+        # Get the Time dimension and set global span cost to balance workloads across drivers
+        time_dim = routing.GetDimensionOrDie("Time")
+        time_dim.SetGlobalSpanCostCoefficient(100)
         
         # Demand callback - returns the demand (quantity/volume) for each node
         def demand_callback(from_index: int) -> int:
@@ -253,9 +271,9 @@ class RouteOptimizer:
             routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
         )
         search_parameters.local_search_metaheuristic = (
-            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
+            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
         )
-        search_parameters.time_limit.seconds = 60  # 60 second time limit
+        search_parameters.time_limit.seconds = 60  # 600 second time limit
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")
