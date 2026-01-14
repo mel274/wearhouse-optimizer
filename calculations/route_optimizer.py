@@ -165,7 +165,7 @@ class RouteOptimizer:
             to_node = manager.IndexToNode(to_index)
             distance = int(data['distance_matrix'][from_node][to_node])
             travel_time = int(data['time_matrix'][from_node][to_node])
-            return int(distance * 1.0 + travel_time * 1.0)
+            return int(distance * 1.0 + travel_time * 6.0)
         
         cost_callback_index = routing.RegisterTransitCallback(cost_callback)
         
@@ -273,7 +273,7 @@ class RouteOptimizer:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
         )
-        search_parameters.time_limit.seconds = 60  # 600 second time limit
+        search_parameters.time_limit.seconds = 60  # 60 second time limit
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")
