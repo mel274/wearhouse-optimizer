@@ -263,6 +263,14 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 for idx, route in enumerate(solution['routes']):
                     if len(route) <= 2: continue
 
+                    # Calculate Load in Items (Quantity) for display
+                    route_item_load = 0
+                    for node_idx in route[1:-1]:
+                        if node_idx > 0:
+                            customer = valid_coords.iloc[node_idx - 1]
+                            route_item_load += customer.get('avg_quantity', 0)
+                    
+                    # Keep scaled volume load for constraint checking
                     current_load = sum(demands[node] for node in route)
                     r_metrics = route_metrics[idx] if idx < len(route_metrics) else {'distance': 0, 'duration': 0}
                     dist_km = r_metrics.get('distance', 0) / 1000
@@ -301,7 +309,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     if r_metrics.get('duration', 0) > params['max_shift_seconds']: warnings.append("⚠️ Overtime")
                     status_str = " ".join(warnings) if warnings else "✅ OK"
 
-                    header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {current_load} | Dist: {dist_km:.1f} km | Time: {dur_str}{vol_str} {status_str}"
+                    header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {int(route_item_load)} | Dist: {dist_km:.1f} km | Time: {dur_str}{vol_str} {status_str}"
 
                     with st.expander(header):
                         stops_data = []
