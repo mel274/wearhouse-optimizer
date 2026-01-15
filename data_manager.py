@@ -4,8 +4,9 @@ Data management service for Excel file processing and customer aggregation.
 
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 import logging
+import os
 from config import Config
 import shared.utils as utils
 
@@ -15,10 +16,152 @@ logger = logging.getLogger(__name__)
 
 class DataManager:
     """Service for loading, validating, and aggregating delivery data."""
-    
+
     def __init__(self):
         """Initialize DataManager with default configuration."""
         self.expected_columns = Config.EXPECTED_HEBREW_COLUMNS
+
+    def _load_master_locations(self) -> Dict[str, Tuple[float, float]]:
+        """
+        Load master locations from Excel file for hybrid geocoding.
+
+        Returns:
+            Dictionary mapping customer names to (lat, lng) tuples.
+            Returns empty dict if file doesn't exist or can't be loaded.
+        """
+        master_file_path = "assets/garages.xlsx"
+        master_locations = {}
+
+        # Check if file exists
+        if not os.path.exists(master_file_path):
+            logger.info(f"Master locations file not found: {master_file_path}. Using API geocoding only.")
+            return master_locations
+
+        try:
+            # Load the Excel file
+            master_df = pd.read_excel(master_file_path)
+
+            # Check if required columns exist
+            name_col = 'שם לקוח \\ מחסן'
+            coords_col = 'קואורדינטות'
+
+            if name_col not in master_df.columns or coords_col not in master_df.columns:
+                logger.warning(f"Required columns '{name_col}' or '{coords_col}' not found in master file. Using API geocoding only.")
+                return master_locations
+
+            # Process each row
+            for idx, row in master_df.iterrows():
+                try:
+                    # Get and clean customer name
+                    customer_name = str(row.get(name_col, '')).strip()
+                    if not customer_name:
+                        continue
+
+                    # Parse coordinates
+                    coords_str = str(row.get(coords_col, '')).strip()
+                    if not coords_str:
+                        continue
+
+                    # Split by comma and convert to float
+                    coords_parts = coords_str.split(',')
+                    if len(coords_parts) != 2:
+                        logger.warning(f"Invalid coordinate format for customer '{customer_name}': {coords_str}")
+                        continue
+
+                    lat = float(coords_parts[0].strip())
+                    lng = float(coords_parts[1].strip())
+
+                    # Store in dictionary
+                    master_locations[customer_name] = (lat, lng)
+
+                except Exception as e:
+                    logger.warning(f"Error parsing row {idx} in master locations file: {e}")
+                    continue
+
+            logger.info(f"Loaded {len(master_locations)} master locations from {master_file_path}")
+            return master_locations
+
+        except Exception as e:
+            logger.error(f"Error loading master locations file: {e}")
+            return master_locations
+
+    def _update_api_detected_file(self, new_api_hits: Dict[str, Tuple[float, float]], master_locations: Dict[str, Tuple[float, float]]):
+        """
+        Update the API-detected locations file with new API hits and clean up customers
+        that have been moved to the master file.
+
+        Args:
+            new_api_hits: Dictionary of customer names -> (lat, lng) for customers found via API in current run
+            master_locations: Dictionary of customer names -> (lat, lng) from master file
+        """
+        detected_file_path = "assets/api_detected_locations.xlsx"
+
+        # Load existing detected locations
+        existing_detected = {}
+        if os.path.exists(detected_file_path):
+            try:
+                detected_df = pd.read_excel(detected_file_path)
+                name_col = 'שם לקוח \\ מחסן'
+                coords_col = 'קואורדינטות'
+
+                if name_col in detected_df.columns and coords_col in detected_df.columns:
+                    for idx, row in detected_df.iterrows():
+                        try:
+                            customer_name = str(row.get(name_col, '')).strip()
+                            coords_str = str(row.get(coords_col, '')).strip()
+
+                            if customer_name and coords_str:
+                                coords_parts = coords_str.split(',')
+                                if len(coords_parts) == 2:
+                                    lat = float(coords_parts[0].strip())
+                                    lng = float(coords_parts[1].strip())
+                                    existing_detected[customer_name] = (lat, lng)
+                        except Exception as e:
+                            logger.warning(f"Error parsing existing detected location row {idx}: {e}")
+                            continue
+            except Exception as e:
+                logger.error(f"Error loading existing detected locations file: {e}")
+                # Continue with empty dict if file is corrupted
+
+        # Step 1: Clean up - remove customers that are now in master file
+        customers_to_remove = []
+        for customer_name in existing_detected:
+            if customer_name in master_locations:
+                customers_to_remove.append(customer_name)
+                logger.info(f"Removing customer '{customer_name}' from detected file - now in master file")
+
+        for customer_name in customers_to_remove:
+            del existing_detected[customer_name]
+
+        # Step 2: Add new API hits from current run
+        for customer_name, coords in new_api_hits.items():
+            existing_detected[customer_name] = coords
+            logger.info(f"Added customer '{customer_name}' to detected file - found via API")
+
+        # Step 3: Save updated detected locations back to Excel
+        if existing_detected:
+            # Convert to DataFrame
+            rows = []
+            for customer_name, (lat, lng) in existing_detected.items():
+                coords_str = f"{lat:.6f},{lng:.6f}"  # Format with reasonable precision
+                rows.append({
+                    'שם לקוח \\ מחסן': customer_name,
+                    'קואורדינטות': coords_str
+                })
+
+            detected_df = pd.DataFrame(rows)
+
+            # Ensure assets directory exists
+            os.makedirs("assets", exist_ok=True)
+
+            # Save to Excel
+            detected_df.to_excel(detected_file_path, index=False)
+            logger.info(f"Saved {len(existing_detected)} detected locations to {detected_file_path}")
+        else:
+            # If no detected locations remain, remove the file
+            if os.path.exists(detected_file_path):
+                os.remove(detected_file_path)
+                logger.info(f"Removed empty detected locations file: {detected_file_path}")
     
     def load_data(self, file) -> pd.DataFrame:
         """Load and validate Excel/CSV file with delivery data."""
@@ -323,14 +466,45 @@ class DataManager:
             return {'lat': None, 'lng': None}
     
     def add_coordinates(self, df: pd.DataFrame, geo_service) -> pd.DataFrame:
-        """Add coordinates to customer data using geocoding service."""
+        """
+        Add coordinates to customer data using hybrid geocoding approach.
+
+        First checks master locations Excel file, then falls back to geocoding API.
+        Tracks API-detected locations for building master file.
+        """
         df_copy = df.copy()
-        
+
+        # Load master locations for hybrid geocoding
+        master_locations = self._load_master_locations()
+        api_calls_made = 0
+        api_hits = {}  # Track customers found via API
+
         for idx, row in df_copy.iterrows():
             if pd.isna(row.get('lat')) or pd.isna(row.get('lng')):
+                customer_name = str(row.get('שם לקוח', '')).strip()
+
+                # Step 1: Try master locations first
+                if customer_name in master_locations:
+                    lat, lng = master_locations[customer_name]
+                    df_copy.at[idx, 'lat'] = lat
+                    df_copy.at[idx, 'lng'] = lng
+                    logger.debug(f"Used master location for customer: {customer_name}")
+                    continue
+
+                # Step 2: Fall back to geocoding API
                 address = row['כתובת']
                 lat, lng = geo_service.get_coordinates(address)
                 df_copy.at[idx, 'lat'] = lat
                 df_copy.at[idx, 'lng'] = lng
-        
+                api_calls_made += 1
+
+                # Track this customer as found via API
+                if lat is not None and lng is not None:
+                    api_hits[customer_name] = (lat, lng)
+
+        logger.info(f"Geocoding completed: {len(master_locations)} master locations used, {api_calls_made} API calls made")
+
+        # Update the API-detected locations file
+        self._update_api_detected_file(api_hits, master_locations)
+
         return df_copy
