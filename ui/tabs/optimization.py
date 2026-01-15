@@ -67,8 +67,6 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 st.session_state.data = updated_data
             except Exception as e:
                 st.error(f"Error recalculating customer force: {str(e)}")
-                import logging
-                logger = logging.getLogger(__name__)
                 logger.error(f"Error recalculating customer force: {e}")
 
     geocoded_data = st.session_state.data
@@ -77,23 +75,41 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         st.error("No geocoded data.")
         return
 
-    demand_col = 'avg_quantity'  # This contains force_quantity (percentile-based)
+    demand_col = 'force_volume'  # Volume-based demand (80th percentile volume in m³)
 
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
         return
 
-    estimated_demand = np.ceil(valid_coords[demand_col]).astype(int)
-
-    # Use FleetService to calculate capacities
-    total_volume = st.session_state.data['total_volume_m3'].sum()
-    total_quantity = st.session_state.data['total_quantity'].sum()
-
+    # Use FleetService to get truck capacities (raw volumes in m³)
     capacities = services['fleet_service'].calculate_capacities(
-        total_volume, total_quantity, services['fleet_settings']
+        services['fleet_settings']
     )
-    small_capacity = capacities['small_capacity']
-    big_capacity = capacities['big_capacity']
+    small_capacity_raw = capacities['small_capacity']
+    big_capacity_raw = capacities['big_capacity']
+    
+    # Get safety factor from fleet settings
+    safety_factor = services['fleet_settings']['safety_factor']
+    
+    # Apply safety factor to loads (divide by safety_factor to make loads appear larger)
+    # This creates the required buffer when filling the truck
+    force_volume = valid_coords[demand_col].fillna(0)
+    effective_volume = force_volume / safety_factor
+    valid_coords['effective_volume'] = effective_volume
+    
+    # Scaling factor for OR-Tools (requires integer inputs)
+    SCALING_FACTOR = 1000
+    
+    # Scale effective volumes to integers for OR-Tools
+    estimated_demand = np.ceil(effective_volume * SCALING_FACTOR).astype(int)
+    
+    # Scale capacities for OR-Tools
+    small_capacity = int(small_capacity_raw * SCALING_FACTOR)
+    big_capacity = int(big_capacity_raw * SCALING_FACTOR)
+    
+    logger.info(f"Volume-based optimization: safety_factor={safety_factor:.2f}, "
+                f"small_capacity={small_capacity_raw:.1f}m³, big_capacity={big_capacity_raw:.1f}m³, "
+                f"scaling_factor={SCALING_FACTOR}")
 
     # Define fleet composition from UI inputs
     num_big_trucks = services.get('num_big_trucks', 12)
@@ -126,7 +142,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             st.session_state.warehouse_coords = wh_coords
 
-            with st.spinner("Running Optimization Stages..."):
+            with st.spinner("Running Volume-Based Optimization..."):
                 matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
                 demands = [0] + estimated_demand.tolist()
 
@@ -179,26 +195,18 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         except DataValidationError as e:
             st.error(f"Data validation error: {str(e)}")
             st.info("💡 Please check your Excel file format and ensure all required columns are present.")
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Data validation error: {e}")
         except GeocodingError as e:
             st.error(f"Geocoding failed: {str(e)}")
             st.info("💡 Please check your warehouse address or ensure you have a valid API key configured.")
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Geocoding error: {e}")
         except APIRateLimitError as e:
             st.warning(f"API rate limit exceeded: {str(e)}")
             st.info("⏳ Please wait a moment before trying again. The system will retry automatically.")
-            import logging
-            logger = logging.getLogger(__name__)
             logger.warning(f"API rate limit error: {e}")
         except Exception as e:
             st.error(f"Unexpected optimization error: {str(e)}")
             st.info("💡 If this persists, please check your data and try again. Contact support if the issue continues.")
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"Unexpected optimization error: {e}")
 
     # Persistent Display Block - Show results if they exist in session state
@@ -243,7 +251,13 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             route_metrics = solution.get('route_metrics', [])
 
             if st.session_state.get("route_view_mode") == "Static Route View":
-                demands = [0] + np.ceil(valid_coords[demand_col]).astype(int).tolist()
+                # Use scaled effective volume demands (same as optimization)
+                SCALING_FACTOR = 1000
+                safety_factor = services['fleet_settings']['safety_factor']
+                force_volume = valid_coords[demand_col].fillna(0)
+                effective_volume = force_volume / safety_factor
+                valid_coords['effective_volume'] = effective_volume
+                demands = [0] + np.ceil(effective_volume * SCALING_FACTOR).astype(int).tolist()
                 params = st.session_state.optimization_params
 
                 for idx, route in enumerate(solution['routes']):
@@ -263,12 +277,12 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                         vehicle_capacity = params.get('big_capacity', big_capacity)
 
                     # Calculate loaded volume for this route
-                    # Sum force_volume (80th percentile) for all customers on this route
+                    # Sum effective_volume (includes safety factor buffer) for all customers on this route
                     loaded_volume = 0.0
                     for node_idx in route[1:-1]:  # Skip depot (first and last nodes)
                         if node_idx > 0:  # Skip depot node
                             customer = valid_coords.iloc[node_idx - 1]
-                            volume = customer.get('force_volume', 0)
+                            volume = customer.get('effective_volume', 0)
                             if pd.notna(volume):
                                 loaded_volume += float(volume)
 
@@ -280,7 +294,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
                     # Calculate volume utilization percentage
                     vol_percent = (loaded_volume / truck_vol_capacity * 100) if truck_vol_capacity > 0 else 0.0
-                    vol_str = f" | Vol: {loaded_volume:.1f} / {truck_vol_capacity:.1f} m³ ({vol_percent:.0f}%)"
+                    vol_str = f" | Vol (Eff): {loaded_volume:.1f} / {truck_vol_capacity:.1f} m³ ({vol_percent:.0f}%)"
 
                     warnings = []
                     if current_load > vehicle_capacity: warnings.append("⚠️ Overloaded")
@@ -327,7 +341,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                         for node_idx in route[1:-1]:
                             if node_idx > 0:
                                 customer = valid_coords.iloc[node_idx - 1]
-                                volume = customer.get('force_volume', 0)
+                                volume = customer.get('effective_volume', 0)
                                 if pd.notna(volume):
                                     route_volume += float(volume)
 
@@ -340,7 +354,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 c1.metric("Total Distance", f"{m['total_distance']/1000:.1f} km")
                 c2.metric("Total Time", f"{m['total_time']/3600:.1f} h")
                 c3.metric("Vehicles Used", m['num_vehicles_used'])
-                c4.metric("Total Volume Used", f"{total_loaded_volume:.1f} / {total_truck_capacity:.1f} m³ ({total_vol_percent:.0f}%)")
+                c4.metric("Total Volume Used (Effective)", f"{total_loaded_volume:.1f} / {total_truck_capacity:.1f} m³ ({total_vol_percent:.0f}%)")
 
             else:
                 # Prerequisites check for Routes per Day view

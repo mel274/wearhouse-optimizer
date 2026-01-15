@@ -54,6 +54,13 @@ class RouteOptimizer:
               coords: List[Tuple[float, float]]) -> Solution:
         """
         Executes the optimization pipeline using OR-Tools global solver.
+        
+        Args:
+            locations: List of location identifiers
+            demands: List of scaled volume demands (m³ * 1000 as integers). 
+                     Index 0 should be 0 (depot), customer nodes have scaled effective volumes.
+            params: Optimization parameters including scaled capacities (small_capacity, big_capacity)
+            coords: List of (lat, lng) coordinates for each location
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
@@ -82,14 +89,14 @@ class RouteOptimizer:
             # Track which vehicle indices are Small Trucks (0 to num_small_trucks-1)
             small_truck_vehicle_indices = list(range(num_small_trucks))
             
-            logger.info(f"Fleet composition: {num_small_trucks} Small Trucks (capacity={small_capacity}), {num_big_trucks} Big Trucks (capacity={big_capacity})")
+            logger.info(f"Fleet composition: {num_small_trucks} Small Trucks (scaled volume capacity={small_capacity}), {num_big_trucks} Big Trucks (scaled volume capacity={big_capacity})")
             
             # Build data model for OR-Tools
             data = {
                 'distance_matrix': matrix_data['distances'],
                 'time_matrix': matrix_data['durations'],
-                'demands': demands,  # Node 0 is warehouse with demand 0
-                'vehicle_capacities': vehicle_capacities,
+                'demands': demands,  # Scaled volume demands (m³ * 1000). Node 0 is warehouse with demand 0
+                'vehicle_capacities': vehicle_capacities,  # Scaled volume capacities (m³ * 1000)
                 'num_vehicles': total_fleet_size,
                 'depot': 0,
                 'max_shift_seconds': params['max_shift_seconds'],
@@ -217,13 +224,13 @@ class RouteOptimizer:
         time_dim = routing.GetDimensionOrDie("Time")
         time_dim.SetGlobalSpanCostCoefficient(100)
         
-        # Demand callback - returns the demand (quantity/volume) for each node
+        # Demand callback - returns the scaled volume demand for each node
         def demand_callback(from_index: int) -> int:
             """
-            Returns the demand of the node.
+            Returns the scaled volume demand of the node (m³ * 1000 as integer).
             
             Note: Node 0 (depot) should have demand 0.
-            Customer nodes should have their actual demand value (quantity or volume).
+            Customer nodes have their scaled effective volume (force_volume / safety_factor * 1000).
             """
             from_node = manager.IndexToNode(from_index)
             demand = data['demands'][from_node]
@@ -240,11 +247,11 @@ class RouteOptimizer:
         
         demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
         
-        # Add capacity dimension - enforces that total demand on a route <= vehicle capacity
+        # Add capacity dimension - enforces that total scaled volume demand on a route <= vehicle scaled capacity
         routing.AddDimensionWithVehicleCapacity(
             demand_callback_index,
             0,  # slack max
-            data['vehicle_capacities'],  # vehicle maximum capacities (list, one per vehicle)
+            data['vehicle_capacities'],  # vehicle maximum scaled capacities (m³ * 1000, list, one per vehicle)
             True,  # start cumul to zero
             "Capacity"
         )
@@ -411,9 +418,9 @@ class RouteOptimizer:
         
         unserved_customers = []
         for idx in unserved_indices:
-            # Check if demand exceeds maximum capacity
+            # Check if scaled volume demand exceeds maximum scaled capacity
             if data['demands'][idx] > max_capacity:
-                reason = 'Demand exceeds vehicle capacity'
+                reason = 'Volume demand exceeds vehicle capacity'
             else:
                 reason = 'Not assigned to any route'
             
@@ -494,10 +501,11 @@ class RouteOptimizer:
         unserved_sorted = sorted(unserved_indices, key=lambda idx: get_dist(coords[idx], warehouse_coord))
         
         current_route = []
-        current_load = 0
+        current_load = 0  # Scaled volume load (m³ * 1000)
         
         for idx in unserved_sorted:
-            if current_load + demands[idx] <= params['capacity']:
+            # Compare scaled volume demand against scaled capacity
+            if current_load + demands[idx] <= params.get('capacity', params.get('big_capacity', 0)):
                 current_route.append(idx)
                 current_load += demands[idx]
             else:
@@ -578,7 +586,7 @@ class RouteOptimizer:
         unserved_demands = [u['demand'] for u in unserved_customers]
         total_unserved_demand = sum(unserved_demands)
         
-        # Check capacity constraints - use maximum capacity (big truck)
+        # Check capacity constraints - use maximum scaled capacity (big truck)
         max_capacity = params.get('big_capacity', params.get('capacity', 0))
         if any(d > max_capacity for d in unserved_demands):
             oversize_customers = [
@@ -587,13 +595,13 @@ class RouteOptimizer:
             ]
             suggestions.append({
                 'type': 'capacity_issue',
-                'message': f"{len(oversize_customers)} customers exceed vehicle capacity",
+                'message': f"{len(oversize_customers)} customers exceed vehicle volume capacity",
                 'details': [{
                     'customer_id': u['id'],
-                    'demand': u['demand'],
-                    'vehicle_capacity': max_capacity
+                    'scaled_volume_demand': u['demand'],
+                    'scaled_vehicle_capacity': max_capacity
                 } for u in oversize_customers],
-                'suggestion': 'Consider using vehicles with higher capacity or splitting orders'
+                'suggestion': 'Consider using vehicles with higher volume capacity or splitting orders'
             })
 
         # Check time constraints
