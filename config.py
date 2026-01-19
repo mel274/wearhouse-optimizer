@@ -10,7 +10,8 @@ load_dotenv()
 
 class Config:
     """Application configuration constants."""
-    
+    # NEW: Point to your local server
+    ORS_BASE_URL = "http://localhost:8080/ors/v2"
     # OpenRouteService API Key (Primary)
     OPENROUTESERVICE_API_KEY = os.getenv('OPENROUTESERVICE_API_KEY', '')
     
@@ -76,7 +77,7 @@ class Config:
     ORS_MATRIX_CHUNK_SIZE = 40  # ORS API limit is ~50 locations per request
     
     # --- GRACEFUL EXECUTION SETTINGS ---
-    RATE_LIMIT_DELAY = 2.0  # Wait 2 seconds between API calls (Prevents overloading)
+    RATE_LIMIT_DELAY = 0.1  # Wait 0.1 seconds between API calls (Prevents overloading)
     STEP_DELAY = 3.0        # Wait 3 seconds between major logic stages
     
     # Expected Hebrew column names for Excel uploads

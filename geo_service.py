@@ -78,7 +78,7 @@ class GeoService:
         if not self.api_key:
             return coords
 
-        url = "https://api.openrouteservice.org/geocode/reverse"
+        url = "http://localhost:8080/ors/geocode/reverse"
         params = {
             'api_key': self.api_key,
             'point.lon': coords[1],
@@ -108,9 +108,9 @@ class GeoService:
         """
         if not self.api_key:
             return [start, end]
-        
+
         url = "https://api.openrouteservice.org/v2/directions/driving-car"
-        
+
         # ORS expects [lon, lat]
         coordinates = [[start[1], start[0]], [end[1], end[0]]]
         body = {"coordinates": coordinates}
@@ -182,7 +182,7 @@ class GeoService:
 
     def _geocode_ors(self, address: str) -> Tuple[Optional[float], Optional[float]]:
         if not self.api_key: return None, None
-        url = "https://api.openrouteservice.org/geocode/search"
+        url = "http://localhost:8080/ors/geocode/search"
         params = {'api_key': self.api_key, 'text': address, 'boundary.country': 'IL', 'size': 1}
         response = requests.get(url, params=params, timeout=5)
         if response.status_code == 200:

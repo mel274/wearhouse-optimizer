@@ -1,0 +1,16 @@
+ors:
+  engine:
+    profile_default:
+      service:
+        maximum_distance: 1000000  # 1,000 km instead of default 100 km
+        maximum_distance_alternative_routes: 1000000
+        maximum_distance_round_trip_routes: 1000000
+  endpoints:
+    routing:
+      enabled: true
+    isochrones:
+      enabled: true
+      maximum_range_distance_default: 1000000
+      maximum_range_distance:
+        - profiles: driving-car
+          value: 1000000

@@ -79,7 +79,7 @@ class ORSHandler:
             # ORS expects [lon, lat]
             formatted_locations = [[loc[1], loc[0]] for loc in locations]
             
-            url = "https://api.openrouteservice.org/v2/matrix/driving-car"
+            url = "http://localhost:8080/ors/v2/matrix/driving-car"
             headers = {
                 'Authorization': self.api_key,
                 'Content-Type': 'application/json'
@@ -121,7 +121,7 @@ class ORSHandler:
         distances_matrix = [[0.0] * num_locations for _ in range(num_locations)]
         
         # Loop through source chunks
-        url = "https://api.openrouteservice.org/v2/matrix/driving-car"
+        url = "http://localhost:8080/ors/v2/matrix/driving-car"
         headers = {
             'Authorization': self.api_key,
             'Content-Type': 'application/json'
@@ -193,16 +193,16 @@ class ORSHandler:
         """
         if not self.api_key:
             raise ValueError("API Key is required for directions requests.")
-            
+
         if not route_coordinates or len(route_coordinates) < 2:
             raise ValueError("At least two coordinates are required for directions.")
-        
+
         logger.info(f"Fetching directions for route with {len(route_coordinates)} waypoints")
-        
+
         try:
             # ORS expects [lon, lat]
             formatted_coords = [[coord[1], coord[0]] for coord in route_coordinates]
-            
+
             url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
             headers = {
                 'Authorization': self.api_key,
@@ -211,7 +211,7 @@ class ORSHandler:
             body = {
                 "coordinates": formatted_coords
             }
-            
+
             response = self.session.post(
                 url,
                 json=body,
@@ -219,9 +219,9 @@ class ORSHandler:
                 timeout=self.timeout
             )
             response.raise_for_status()
-            
+
             data = response.json()
-            
+
             # Extract geometry from GeoJSON
             geometry = []
             if 'features' in data and len(data['features']) > 0:
@@ -229,7 +229,7 @@ class ORSHandler:
                 if 'geometry' in feature and 'coordinates' in feature['geometry']:
                     # Convert [lon, lat] -> (lat, lon)
                     geometry = [(coord[1], coord[0]) for coord in feature['geometry']['coordinates']]
-            
+
             # Extract distance and duration from properties
             distance = 0.0
             duration = 0.0
@@ -238,13 +238,13 @@ class ORSHandler:
                 summary = properties.get('summary', {})
                 distance = summary.get('distance', 0.0)  # meters
                 duration = summary.get('duration', 0.0)  # seconds
-            
+
             return {
                 'geometry': geometry,
                 'distance': distance,
                 'duration': duration
             }
-            
+
         except requests.exceptions.Timeout as e:
             logger.error(f"Directions request timed out: {str(e)}")
             raise
