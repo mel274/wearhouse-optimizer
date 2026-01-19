@@ -112,16 +112,37 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
 
     # Run simulation
     with st.spinner("Running simulation..."):
+        # Build route capacities list based on vehicle type
+        solution = st.session_state.solution
+        route_metrics = solution.get('route_metrics', [])
+        route_capacities = []
+        small_truck_vol = services['fleet_settings']['small_truck_vol']
+        big_truck_vol = services['fleet_settings']['big_truck_vol']
+        for idx in range(len(solution['routes'])):
+            if idx < len(route_metrics):
+                vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
+                if vehicle_type == 'Small':
+                    route_capacities.append(small_truck_vol)
+                else:
+                    route_capacities.append(big_truck_vol)
+            else:
+                # Default to big truck if unknown
+                route_capacities.append(big_truck_vol)
+        
         simulation_results = run_historical_simulation(
             historical_data=filtered_data_with_coords,
-            master_routes=st.session_state.solution['routes'],
+            master_routes=solution['routes'],
             distance_matrix=st.session_state.distance_matrix,
             time_matrix=st.session_state.time_matrix,
             node_map=st.session_state.node_map,
             service_time_seconds=st.session_state.optimization_params.get('service_time_seconds', 900),
             date_col=order_date_col,
             customer_id_col="מס' לקוח",
-            depot=0
+            depot=0,
+            route_capacities=route_capacities,
+            max_shift_seconds=st.session_state.optimization_params.get('max_shift_seconds'),
+            volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
+            time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
         )
 
     # Convert Date column to datetime for filtering

@@ -21,6 +21,47 @@ class DataManager:
         """Initialize DataManager with default configuration."""
         self.expected_columns = Config.EXPECTED_HEBREW_COLUMNS
 
+    def _calculate_client_force(self, daily_values, total_days: int, buffer: float) -> float:
+        """
+        Calculate Client Force using industry standard formula:
+            force = mean + (std * buffer)
+
+        Critically, includes "days without orders" as 0 values, based on the
+        total_days timeline of the uploaded file.
+
+        Args:
+            daily_values: Array-like of observed daily totals (e.g., quantities/volumes) for days with orders.
+            total_days: Total number of days in the file's date range (inclusive).
+            buffer: Multiplier applied to standard deviation.
+
+        Returns:
+            Calculated force value as float.
+        """
+        try:
+            total_days = int(total_days)
+        except Exception:
+            total_days = 1
+
+        if total_days <= 0:
+            total_days = 1
+
+        values = np.asarray(daily_values, dtype=float)
+        if values.ndim != 1:
+            values = values.reshape(-1)
+
+        num_zeros = max(0, total_days - len(values))
+        if num_zeros > 0:
+            full_values = np.concatenate([values, np.zeros(num_zeros, dtype=float)])
+        else:
+            full_values = values
+
+        if full_values.size == 0:
+            return 0.0
+
+        mean = float(np.mean(full_values))
+        std = float(np.std(full_values, ddof=1))
+        return mean + (std * float(buffer))
+
     def _normalize_name(self, name: str) -> str:
         """
         Normalize customer names by removing punctuation and fixing spacing.
@@ -273,9 +314,20 @@ class DataManager:
     def aggregate_data(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Aggregate raw delivery data by customer (one row per customer).
-        Calculates Customer Force (80th percentile) for route planning.
+        Calculates Customer Force using: mean + (std * buffer) for route planning.
         """
         try:
+            # Determine timeline (total days) from unique active dates in the file.
+            total_days = 1
+            if 'תאריך אספקה' in df.columns:
+                date_series = pd.to_datetime(df['תאריך אספקה'], errors='coerce').dropna()
+                if not date_series.empty:
+                    total_days = date_series.dt.date.nunique()
+                    if total_days < 1:
+                        total_days = 1
+                else:
+                    total_days = 1
+
             # Group by customer
             group_cols = ['מס\' לקוח', 'שם לקוח', 'כתובת']
             
@@ -294,30 +346,17 @@ class DataManager:
             daily_orders = df.groupby(daily_group_cols, as_index=False).agg(daily_agg_ops)
             logger.info(f"Created daily order aggregation: {len(daily_orders)} customer-date pairs")
             
-            # Step 2: Calculate Force (Percentile) - Group by Customer and calculate percentile
-            percentile_value = Config.CUSTOMER_FORCE_PERCENTILE * 100
-            
-            def calculate_percentile(sorted_array, percentile):
-                """Calculate percentile, handling edge cases."""
-                if len(sorted_array) == 0:
-                    return 0.0
-                if len(sorted_array) == 1:
-                    return float(sorted_array[0])
-                return float(np.percentile(sorted_array, percentile, method='linear'))
-            
-            # Use apply() instead of agg() to ensure proper calculation
+            # Step 2: Calculate Force (mean + std*buffer) including zero-days
+            buffer = 1.0
+
             def calc_force_metrics(group):
                 """Calculate force metrics for a customer group."""
-                # Sort the daily values in ascending order (growing up series)
-                sorted_quantities = np.sort(group['כמות'].values)
-                
                 result = {
-                    'force_quantity': calculate_percentile(sorted_quantities, percentile_value)
+                    'force_quantity': self._calculate_client_force(group['כמות'].values, total_days, buffer)
                 }
                 
                 if 'total_volume_m3' in group.columns:
-                    sorted_volumes = np.sort(group['total_volume_m3'].values)
-                    result['force_volume'] = calculate_percentile(sorted_volumes, percentile_value)
+                    result['force_volume'] = self._calculate_client_force(group['total_volume_m3'].values, total_days, buffer)
                 else:
                     result['force_volume'] = 0.0
                 
@@ -325,7 +364,7 @@ class DataManager:
             
             force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics, include_groups=False).reset_index()
             
-            logger.info(f"Calculated force metrics for {len(force_metrics)} customers using {percentile_value}th percentile")
+            logger.info(f"Calculated force metrics for {len(force_metrics)} customers using buffer={buffer} over total_days={total_days}")
             
             # Step 3: Main aggregation (for other metrics)
             agg_ops = {
@@ -368,26 +407,37 @@ class DataManager:
             aggregated['lat'] = None
             aggregated['lng'] = None
             
-            logger.info(f"Aggregated {len(df)} items to {len(aggregated)} customers using {percentile_value}th percentile force")
+            logger.info(f"Aggregated {len(df)} items to {len(aggregated)} customers using buffer={buffer} force over total_days={total_days}")
             return aggregated
             
         except Exception as e:
             logger.error(f"Error aggregating data: {e}")
             raise ValueError(f"שגיאה באגרגציה של הנתונים: {str(e)}")
     
-    def recalculate_customer_force(self, aggregated_df: pd.DataFrame, raw_df: pd.DataFrame, percentile: float) -> pd.DataFrame:
+    def recalculate_customer_force(self, aggregated_df: pd.DataFrame, raw_df: pd.DataFrame, buffer: float) -> pd.DataFrame:
         """
-        Recalculate Customer Force metrics based on a percentile value.
+        Recalculate Customer Force metrics based on a buffer value.
         
         Args:
             aggregated_df: The aggregated customer dataframe (with existing force metrics)
             raw_df: The raw delivery data (before aggregation)
-            percentile: The percentile value (0.0 to 1.0) to use for force calculation
+            buffer: The standard deviation buffer (float) to use for force calculation
             
         Returns:
             Updated aggregated dataframe with new force metrics
         """
         try:
+            # Determine timeline (total days) from unique active dates in the file.
+            total_days = 1
+            if 'תאריך אספקה' in raw_df.columns:
+                date_series = pd.to_datetime(raw_df['תאריך אספקה'], errors='coerce').dropna()
+                if not date_series.empty:
+                    total_days = date_series.dt.date.nunique()
+                    if total_days < 1:
+                        total_days = 1
+                else:
+                    total_days = 1
+
             # Step 1: Daily Aggregation - Group by Customer ID and Date to get daily order sizes
             daily_group_cols = ['מס\' לקוח', 'תאריך אספקה']
             daily_agg_ops = {
@@ -399,30 +449,15 @@ class DataManager:
             daily_orders = raw_df.groupby(daily_group_cols, as_index=False).agg(daily_agg_ops)
             logger.info(f"Recalculating force: {len(daily_orders)} customer-date pairs")
             
-            # Step 2: Calculate New Percentile - Group by Customer and calculate percentile
-            percentile_value = percentile * 100
-            
-            def calculate_percentile(sorted_array, pct):
-                """Calculate percentile, handling edge cases."""
-                if len(sorted_array) == 0:
-                    return 0.0
-                if len(sorted_array) == 1:
-                    return float(sorted_array[0])
-                return float(np.percentile(sorted_array, pct, method='linear'))
-            
-            # Use apply() instead of agg() to ensure proper calculation
+            # Step 2: Calculate New Force (mean + std*buffer) including zero-days
             def calc_force_metrics(group):
                 """Calculate force metrics for a customer group."""
-                # Sort the daily values in ascending order (growing up series)
-                sorted_quantities = np.sort(group['כמות'].values)
-                
                 result = {
-                    'force_quantity': calculate_percentile(sorted_quantities, percentile_value)
+                    'force_quantity': self._calculate_client_force(group['כמות'].values, total_days, buffer)
                 }
                 
                 if 'total_volume_m3' in group.columns:
-                    sorted_volumes = np.sort(group['total_volume_m3'].values)
-                    result['force_volume'] = calculate_percentile(sorted_volumes, percentile_value)
+                    result['force_volume'] = self._calculate_client_force(group['total_volume_m3'].values, total_days, buffer)
                 else:
                     result['force_volume'] = 0.0
                 
@@ -430,7 +465,7 @@ class DataManager:
             
             force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics, include_groups=False).reset_index()
             
-            logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using {percentile_value}th percentile")
+            logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using buffer={buffer} over total_days={total_days}")
             
             # Step 3: Merge new force metrics into aggregated dataframe
             # Create a copy to avoid modifying the original
@@ -457,7 +492,7 @@ class DataManager:
             # Overwrite avg_quantity with the new force_quantity
             updated_df['avg_quantity'] = updated_df['force_quantity']
             
-            logger.info(f"Updated customer force metrics with {percentile_value}th percentile")
+            logger.info(f"Updated customer force metrics with buffer={buffer}")
             return updated_df
             
         except Exception as e:

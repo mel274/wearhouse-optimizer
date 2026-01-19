@@ -141,7 +141,11 @@ def run_historical_simulation(
     date_col: str = 'תאריך אספקה',
     customer_id_col: str = "מס' לקוח",
     quantity_col: str = 'כמות',
-    depot: int = 0
+    depot: int = 0,
+    route_capacities: List[float] = None,
+    max_shift_seconds: int = None,
+    volume_tolerance: float = 0.0,
+    time_tolerance: float = 0.0
 ) -> pd.DataFrame:
     """
     Run backtesting simulation on historical data.
@@ -157,10 +161,15 @@ def run_historical_simulation(
         customer_id_col: Column name containing customer IDs
         quantity_col: Column name containing quantity/volume data
         depot: Matrix index of depot (usually 0)
+        route_capacities: Optional list of volume limits for each master route
+        max_shift_seconds: Optional global shift duration limit in seconds
+        volume_tolerance: Percentage tolerance for volume overload (e.g., 0.05 for 5%)
+        time_tolerance: Percentage tolerance for time overage (e.g., 0.05 for 5%)
 
     Returns:
         DataFrame with daily metrics: Date, Total_Distance_km, Max_Shift_Duration_hours,
-        Fleet_Utilization_pct, Active_Customers, Variance_Customers, Route_Breakdown
+        Fleet_Utilization_pct, Active_Customers, Variance_Customers, Route_Breakdown.
+        Route_Breakdown includes success status and limits for each route on each day.
     """
     logger.info(f"Starting historical simulation for {len(historical_data)} historical records")
 
@@ -226,14 +235,48 @@ def run_historical_simulation(
                             if pd.notna(customer_quantity):
                                 total_load += float(customer_quantity)
 
+                # Determine limits with tolerance
+                limit_vol = None
+                limit_time = None
+                if route_capacities is not None and route_idx < len(route_capacities):
+                    limit_vol = route_capacities[route_idx] * (1 + volume_tolerance)
+                if max_shift_seconds is not None:
+                    limit_time = max_shift_seconds * (1 + time_tolerance)
+
+                # Check success/failure status
+                vol_ok = True if limit_vol is None else (total_load <= limit_vol)
+                time_ok = True if limit_time is None else (metrics['duration'] <= limit_time)
+                is_success = vol_ok and time_ok
+
+                # Determine status string
+                if is_success:
+                    status_string = "OK"
+                else:
+                    status_parts = []
+                    if not vol_ok:
+                        status_parts.append("Overload")
+                    if not time_ok:
+                        status_parts.append("Overtime")
+                    status_string = "+".join(status_parts)
+
                 # Add granular route metrics
-                route_breakdown.append({
+                route_data = {
                     "route_id": route_idx,
                     "num_stops": metrics['num_stops'],
                     "total_load": total_load,
                     "distance_meters": metrics['distance'],
-                    "duration_seconds": metrics['duration']
-                })
+                    "duration_seconds": metrics['duration'],
+                    "success": is_success,
+                    "status": status_string
+                }
+                
+                # Add limit fields if available
+                if limit_vol is not None:
+                    route_data["limit_vol"] = limit_vol
+                if limit_time is not None:
+                    route_data["limit_time"] = limit_time
+                
+                route_breakdown.append(route_data)
 
                 # Aggregate daily totals
                 daily_total_distance += metrics['distance']

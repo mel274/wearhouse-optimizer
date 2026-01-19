@@ -62,7 +62,8 @@ class Config:
     VEHICLE_FIXED_COST = 1000000  # Fixed cost per vehicle used
     
     # Customer Force (Percentile-based demand planning)
-    CUSTOMER_FORCE_PERCENTILE = 0.8  # 80th percentile for route planning
+    # Deprecated: percentile-based Customer Force (kept for backward compatibility).
+    CUSTOMER_FORCE_PERCENTILE = 0.8
     
     # API and caching parameters
     API_TIMEOUT = 30 # Increased timeout for robustness

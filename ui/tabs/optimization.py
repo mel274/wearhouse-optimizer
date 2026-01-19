@@ -44,30 +44,23 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
     if services['route_optimizer'] is None:
         services['route_optimizer'] = RouteOptimizer(Config.OPENROUTESERVICE_API_KEY)
 
-    # Add Customer Force slider to sidebar
-    st.sidebar.markdown("---")
-    force_percentile = st.sidebar.slider(
-        'customer force percentile',
-        min_value=0.5,
-        max_value=1.0,
-        value=0.8,
-        step=0.05
-    )
-
+    # Retrieve safety buffer from global fleet settings
+    safety_buffer = services['fleet_settings'].get('safety_buffer', 1.0)
+    
     # Recalculate customer force if raw data is available
     if hasattr(st.session_state, 'raw_data') and st.session_state.raw_data is not None:
         if st.session_state.data is not None:
             try:
-                # Recalculate force metrics with the new percentile
+                # Recalculate force metrics with the new safety buffer
                 updated_data = services['data_manager'].recalculate_customer_force(
                     st.session_state.data,
                     st.session_state.raw_data,
-                    force_percentile
+                    buffer=safety_buffer
                 )
                 st.session_state.data = updated_data
             except Exception as e:
-                st.error(f"Error recalculating customer force: {str(e)}")
-                logger.error(f"Error recalculating customer force: {e}")
+                st.error(f"Error recalculating customer force with safety buffer: {str(e)}")
+                logger.error(f"Error recalculating customer force with safety buffer: {e}")
 
     geocoded_data = st.session_state.data
     valid_coords = geocoded_data.dropna(subset=['lat', 'lng'])
@@ -75,7 +68,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         st.error("No geocoded data.")
         return
 
-    demand_col = 'force_volume'  # Volume-based demand (80th percentile volume in m³)
+    demand_col = 'force_volume'  # Volume-based demand (Mean + Std*Buffer)
 
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
@@ -142,17 +135,31 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             st.session_state.warehouse_coords = wh_coords
 
-            with st.spinner("Running Volume-Based Optimization..."):
+            with st.spinner("calculating optimization..."):
                 matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
                 demands = [0] + estimated_demand.tolist()
+
+                # Retrieve tolerances from fleet settings
+                volume_tolerance = services['fleet_settings'].get('volume_tolerance', 0.0)
+                time_tolerance = services['fleet_settings'].get('time_tolerance', 0.0)
+
+                # Calculate boosted capacities (apply volume tolerance)
+                opt_small_capacity = int(small_capacity * (1 + volume_tolerance))
+                opt_big_capacity = int(big_capacity * (1 + volume_tolerance))
+
+                # Calculate boosted time (apply time tolerance)
+                base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
+                opt_shift_seconds = int(base_shift_seconds * (1 + time_tolerance))
+
+                logger.info(f"Optimizing with tolerances: Vol+{volume_tolerance:.1%}, Time+{time_tolerance:.1%}")
 
                 params = {
                     'fleet_size': total_fleet_size,
                     'num_small_trucks': num_small_trucks,
                     'num_big_trucks': num_big_trucks,
-                    'small_capacity': small_capacity,
-                    'big_capacity': big_capacity,
-                    'max_shift_seconds': int(round(services['max_shift_hours'] * 3600)),
+                    'small_capacity': opt_small_capacity,      # Use boosted capacity
+                    'big_capacity': opt_big_capacity,          # Use boosted capacity
+                    'max_shift_seconds': opt_shift_seconds,    # Use boosted time
                     'service_time_seconds': services['service_time_minutes'] * 60
                 }
 
@@ -276,6 +283,15 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     else:
                         vehicle_capacity = params.get('big_capacity', big_capacity)
 
+                    # Calculate route item load (total quantity in items)
+                    route_item_load = 0
+                    for node_idx in route[1:-1]:  # Skip depot (first and last nodes)
+                        if node_idx > 0:  # Skip depot node
+                            customer = valid_coords.iloc[node_idx - 1]
+                            quantity = customer.get('avg_quantity', 0)
+                            if pd.notna(quantity):
+                                route_item_load += float(quantity)
+
                     # Calculate loaded volume for this route
                     # Sum effective_volume (includes safety factor buffer) for all customers on this route
                     loaded_volume = 0.0
@@ -301,7 +317,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     if r_metrics.get('duration', 0) > params['max_shift_seconds']: warnings.append("⚠️ Overtime")
                     status_str = " ".join(warnings) if warnings else "✅ OK"
 
-                    header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {current_load} | Dist: {dist_km:.1f} km | Time: {dur_str}{vol_str} {status_str}"
+                    header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {int(route_item_load)} | Dist: {dist_km:.1f} km | Time: {dur_str}{vol_str} {status_str}"
 
                     with st.expander(header):
                         stops_data = []
@@ -367,6 +383,22 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
                 # Run historical simulation
                 with st.spinner("Running historical simulation..."):
+                    # Build route capacities list based on vehicle type
+                    route_metrics = solution.get('route_metrics', [])
+                    route_capacities = []
+                    small_truck_vol = services['fleet_settings']['small_truck_vol']
+                    big_truck_vol = services['fleet_settings']['big_truck_vol']
+                    for idx in range(len(solution['routes'])):
+                        if idx < len(route_metrics):
+                            vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
+                            if vehicle_type == 'Small':
+                                route_capacities.append(small_truck_vol)
+                            else:
+                                route_capacities.append(big_truck_vol)
+                        else:
+                            # Default to big truck if unknown
+                            route_capacities.append(big_truck_vol)
+                    
                     sim_results = run_historical_simulation(
                         historical_data=st.session_state.raw_data,
                         master_routes=solution['routes'],
@@ -376,7 +408,11 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                         service_time_seconds=st.session_state.optimization_params['service_time_seconds'],
                         date_col='תאריך אספקה',
                         customer_id_col="מס' לקוח",
-                        quantity_col='total_volume_m3'
+                        quantity_col='total_volume_m3',
+                        route_capacities=route_capacities,
+                        max_shift_seconds=st.session_state.optimization_params.get('max_shift_seconds'),
+                        volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
+                        time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
                     )
 
                 # Data transformation: Pivot from date-centric to route-centric
@@ -400,7 +436,9 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                                 'Stops': route_data['num_stops'],
                                 'Volume': route_data['total_load'],
                                 'Distance (km)': route_data['distance_meters'] / 1000,  # Convert to km
-                                'Time (h)': route_data['duration_seconds'] / 3600     # Convert to hours
+                                'Time (h)': route_data['duration_seconds'] / 3600,     # Convert to hours
+                                'success': route_data.get('success', True),  # Include success status
+                                'status': route_data.get('status', 'OK')     # Include status string
                             })
 
                 # Calculate total simulation days
@@ -416,6 +454,11 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     if not route_daily_data:
                         continue
 
+                    # Calculate success rate statistics
+                    total_days_driven = len(route_daily_data)
+                    success_days = sum(1 for day in route_daily_data if day.get('success', True))
+                    success_rate = (success_days / total_days_driven * 100) if total_days_driven > 0 else 0.0
+
                     # Calculate averages for this route
                     avg_stops = np.mean([day['Stops'] for day in route_daily_data])
                     avg_volume = np.mean([day['Volume'] for day in route_daily_data])
@@ -425,8 +468,11 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     # Count days this route was driven
                     days_driven = len(route_daily_data)
 
-                    # Expander header with averages and days driven
-                    header = f"Route {idx+1}: Avg {avg_stops:.1f} stops | Avg Vol: {avg_volume:.1f} | Avg Dist: {avg_distance:.1f} km | Avg Time: {avg_time:.1f} h | Driven: {days_driven}/{total_sim_days} days"
+                    # Choose emoji based on success rate
+                    success_emoji = "✅" if success_rate >= 95.0 else "⚠️"
+
+                    # Expander header with success rate, averages and days driven
+                    header = f"Route {idx+1}: {success_emoji} {success_rate:.1f}% Success | Avg {avg_stops:.1f} stops | Avg Vol: {avg_volume:.1f} | Avg Dist: {avg_distance:.1f} km | Avg Time: {avg_time:.1f} h | Driven: {days_driven}/{total_sim_days} days"
 
                     with st.expander(header):
                         # Create DataFrame for daily stats
@@ -434,6 +480,11 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                         # Format Date column to clean string format
                         if 'Date' in daily_df.columns:
                             daily_df['Date'] = pd.to_datetime(daily_df['Date']).dt.strftime('%Y-%m-%d')
+                        # Ensure status column is included and formatted
+                        if 'status' in daily_df.columns:
+                            # Reorder columns to put status at the end for better visibility
+                            cols = [col for col in daily_df.columns if col != 'status'] + ['status']
+                            daily_df = daily_df[cols]
                         st.dataframe(daily_df, use_container_width=True, hide_index=True)
 
                 # Footer: System-wide daily averages and totals

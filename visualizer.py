@@ -70,14 +70,14 @@ class MapBuilder:
                 if pd.notna(row['lat']) and pd.notna(row['lng']):
                     radius = 3
 
-                    # Use effective volume if available, otherwise fall back to raw force_volume
-                    vol = row.get('effective_volume', row.get('force_volume', 0))
+                    # Use Customer Force (force_volume)
+                    vol = row.get('force_volume', 0)
 
                     popup_html = f"""
                     <div style="font-family: Arial, sans-serif; font-size: 12px;">
                         <strong>{row.get('שם לקוח', 'N/A')}</strong><br>
                         Address: {row.get('כתובת', 'N/A')}<br>
-                        Volume (Eff): {round(vol, 2)} m³
+                        Customer Force: {round(vol, 2)} m³
                     </div>
                     """
                     
@@ -237,15 +237,15 @@ class MapBuilder:
 
     def _add_stop_marker(self, m, customer, coords, stop_num, route_num, color):
         """Helper to add a numbered marker for a stop with colored dot."""
-        # Use effective volume if available, otherwise fall back to raw force_volume
-        vol = customer.get('effective_volume', customer.get('force_volume', 0))
+        # Use Customer Force (force_volume)
+        vol = customer.get('force_volume', 0)
 
         popup_html = f"""
         <div style="font-family: Arial, sans-serif;">
             <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
             Stop: {stop_num}<br>
             Route: {route_num}<br>
-            Volume (Eff): {round(vol, 2)} m³
+            Customer Force: {round(vol, 2)} m³
         </div>
         """
         
@@ -266,15 +266,15 @@ class MapBuilder:
 
     def _add_failed_marker(self, m, customer, coords, reason):
         """Helper to add a warning marker for failed customers."""
-        # Use effective volume if available, otherwise fall back to raw force_volume
-        vol = customer.get('effective_volume', customer.get('force_volume', 0))
+        # Use Customer Force (force_volume)
+        vol = customer.get('force_volume', 0)
 
         popup_html = f"""
         <div style="font-family: Arial, sans-serif; color: #a94442;">
             <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
             <span style="font-weight: bold;">⚠️ COULD NOT SERVE</span><br>
             Reason: {reason}<br>
-            Volume (Eff): {round(vol, 2)} m³
+            Customer Force: {round(vol, 2)} m³
         </div>
         """
         

@@ -280,7 +280,7 @@ class RouteOptimizer:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
         )
-        search_parameters.time_limit.seconds = 60  # 60 second time limit
+        search_parameters.time_limit.seconds = 150  # 150 second time limit
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")

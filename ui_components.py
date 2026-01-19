@@ -70,6 +70,24 @@ def setup_sidebar() -> Dict[str, Any]:
         "Small Truck Volume (m³)", 1.0, 100.0, Config.FLEET_DEFAULTS['small_truck_vol'], 0.5
     )
     safety_factor = st.sidebar.slider("Safety Factor", 0.1, 1.0, Config.FLEET_DEFAULTS['safety_factor'], 0.05)
+    safety_buffer = st.sidebar.slider(
+        'Buffer',
+        min_value=0.1,
+        max_value=2.0,
+        value=1.0,
+        step=0.1,
+        help="Statistical multiplier for Standard Deviation (Force Calculation)"
+    )
+
+    st.sidebar.subheader("Stress Test Tolerances")
+    volume_tolerance_pct = st.sidebar.number_input(
+        "Volume Tolerance (%)", 0, 100, 0, 1,
+        help="Allowable percentage deviation for volume overload (e.g., 5% = 0.05 ratio)"
+    )
+    time_tolerance_pct = st.sidebar.number_input(
+        "Time Tolerance (%)", 0, 100, 0, 1,
+        help="Allowable percentage deviation for time overage (e.g., 5% = 0.05 ratio)"
+    )
 
     return {
         'warehouse_address': warehouse_address,
@@ -85,7 +103,10 @@ def setup_sidebar() -> Dict[str, Any]:
         'fleet_settings': {
             'big_truck_vol': big_truck_vol,
             'small_truck_vol': small_truck_vol,
-            'safety_factor': safety_factor
+            'safety_factor': safety_factor,
+            'safety_buffer': safety_buffer,
+            'volume_tolerance': volume_tolerance_pct / 100.0,
+            'time_tolerance': time_tolerance_pct / 100.0
         }
     }
 
