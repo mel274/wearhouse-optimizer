@@ -21,6 +21,31 @@ class DataManager:
         """Initialize DataManager with default configuration."""
         self.expected_columns = Config.EXPECTED_HEBREW_COLUMNS
 
+    def _normalize_name(self, name: str) -> str:
+        """
+        Normalize customer names by removing punctuation and fixing spacing.
+
+        Args:
+            name: Raw customer name string
+
+        Returns:
+            Normalized name with punctuation removed and spacing cleaned
+        """
+        import re
+
+        # Convert to string and strip whitespace
+        name = str(name).strip()
+
+        # Remove punctuation: . , ' " ( ) / \
+        # Keep hyphens (-) as they are often meaningful in company names
+        punctuation = r'[.,\'\"\(\)/\\]'
+        name = re.sub(punctuation, '', name)
+
+        # Replace multiple consecutive spaces with single space
+        name = re.sub(r'\s+', ' ', name)
+
+        return name.strip()
+
     def _load_master_locations(self) -> Dict[str, Tuple[float, float]]:
         """
         Load master locations from Excel file for hybrid geocoding.
@@ -52,10 +77,12 @@ class DataManager:
             # Process each row
             for idx, row in master_df.iterrows():
                 try:
-                    # Get and clean customer name
-                    customer_name = str(row.get(name_col, '')).strip()
-                    if not customer_name:
+                    # Get and normalize customer name
+                    raw_customer_name = str(row.get(name_col, '')).strip()
+                    if not raw_customer_name:
                         continue
+
+                    normalized_name = self._normalize_name(raw_customer_name)
 
                     # Parse coordinates
                     coords_str = str(row.get(coords_col, '')).strip()
@@ -65,14 +92,14 @@ class DataManager:
                     # Split by comma and convert to float
                     coords_parts = coords_str.split(',')
                     if len(coords_parts) != 2:
-                        logger.warning(f"Invalid coordinate format for customer '{customer_name}': {coords_str}")
+                        logger.warning(f"Invalid coordinate format for customer '{raw_customer_name}' (normalized: '{normalized_name}'): {coords_str}")
                         continue
 
                     lat = float(coords_parts[0].strip())
                     lng = float(coords_parts[1].strip())
 
-                    # Store in dictionary
-                    master_locations[customer_name] = (lat, lng)
+                    # Store in dictionary using normalized name as key
+                    master_locations[normalized_name] = (lat, lng)
 
                 except Exception as e:
                     logger.warning(f"Error parsing row {idx} in master locations file: {e}")
@@ -126,9 +153,10 @@ class DataManager:
         # Step 1: Clean up - remove customers that are now in master file
         customers_to_remove = []
         for customer_name in existing_detected:
-            if customer_name in master_locations:
+            normalized_detected_name = self._normalize_name(customer_name)
+            if normalized_detected_name in master_locations:
                 customers_to_remove.append(customer_name)
-                logger.info(f"Removing customer '{customer_name}' from detected file - now in master file")
+                logger.info(f"Removing customer '{customer_name}' from detected file - normalized match found in master file")
 
         for customer_name in customers_to_remove:
             del existing_detected[customer_name]
@@ -482,13 +510,14 @@ class DataManager:
         for idx, row in df_copy.iterrows():
             if pd.isna(row.get('lat')) or pd.isna(row.get('lng')):
                 customer_name = str(row.get('שם לקוח', '')).strip()
+                normalized_name = self._normalize_name(customer_name)
 
-                # Step 1: Try master locations first
-                if customer_name in master_locations:
-                    lat, lng = master_locations[customer_name]
+                # Step 1: Try master locations first (using normalized name)
+                if normalized_name in master_locations:
+                    lat, lng = master_locations[normalized_name]
                     df_copy.at[idx, 'lat'] = lat
                     df_copy.at[idx, 'lng'] = lng
-                    logger.debug(f"Used master location for customer: {customer_name}")
+                    logger.debug(f"Used master location for customer: {customer_name} (normalized: {normalized_name})")
                     continue
 
                 # Step 2: Fall back to geocoding API
