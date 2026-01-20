@@ -7,6 +7,7 @@ import logging
 import pandas as pd
 from typing import List, Dict, Any, Tuple, Set
 from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,177 @@ def calculate_route_metrics(
     }
 
 
+def _process_single_date(
+    date: Any,
+    day_data: pd.DataFrame,
+    master_routes: List[List[int]],
+    distance_matrix: List[List[float]],
+    time_matrix: List[List[float]],
+    node_map: Dict[Any, int],
+    reverse_node_map: Dict[int, Any],
+    service_time_seconds: int,
+    depot: int,
+    route_capacities: List[float],
+    max_shift_seconds: int,
+    volume_tolerance: float,
+    time_tolerance: float,
+    customer_id_col: str,
+    quantity_col: str
+) -> Dict[str, Any]:
+    """
+    Process a single date in the historical simulation.
+    
+    Args:
+        date: The date to process
+        day_data: Pre-filtered DataFrame containing only data for this date
+        master_routes: List of optimized routes
+        distance_matrix: Cached distance matrix
+        time_matrix: Cached time matrix
+        node_map: Mapping of Customer ID -> Matrix Index
+        reverse_node_map: Mapping of Matrix Index -> Customer ID
+        service_time_seconds: Service time per stop in seconds
+        depot: Matrix index of depot
+        route_capacities: List of volume limits for each master route
+        max_shift_seconds: Global shift duration limit in seconds
+        volume_tolerance: Percentage tolerance for volume overload
+        time_tolerance: Percentage tolerance for time overage
+        customer_id_col: Column name containing customer IDs
+        quantity_col: Column name containing quantity/volume data
+        
+    Returns:
+        Dictionary with daily metrics for this date
+    """
+    # Get active customers for this date
+    active_customer_ids = set(day_data[customer_id_col].dropna().unique())
+
+    # Convert customer IDs to matrix indices
+    active_nodes = set()
+    variance_customers = []
+
+    for customer_id in active_customer_ids:
+        if customer_id in node_map:
+            active_nodes.add(node_map[customer_id])
+        else:
+            # Customer not in master routes (variance/ghost customer)
+            variance_customers.append(customer_id)
+
+    # Calculate metrics for each master route (sub-routes)
+    daily_total_distance = 0.0
+    daily_max_duration = 0.0
+    daily_total_stops = 0
+    active_routes = 0
+    route_breakdown = []
+    
+    # Initialize daily aggregation counters
+    daily_total_duration = 0.0
+    daily_total_capacity = 0.0
+    daily_total_load = 0.0
+
+    for route_idx, master_route in enumerate(master_routes):
+        # Create sub-route for this date
+        sub_route = create_sub_route(master_route, active_nodes, depot)
+
+        # Only process routes with at least one customer stop
+        if len(sub_route) > 2:  # More than just [depot, depot]
+            metrics = calculate_route_metrics(
+                sub_route,
+                distance_matrix,
+                time_matrix,
+                service_time_seconds,
+                depot
+            )
+            
+            # Add duration to daily total
+            daily_total_duration += metrics['duration']
+
+            # Calculate total load for this route
+            total_load = 0.0
+            for node in sub_route:
+                if node != depot and node in reverse_node_map:
+                    customer_id = reverse_node_map[node]
+                    customer_orders = day_data[day_data[customer_id_col] == customer_id]
+                    if not customer_orders.empty:
+                        # Sum quantity for this customer on this date
+                        customer_quantity = customer_orders[quantity_col].sum()
+                        if pd.notna(customer_quantity):
+                            total_load += float(customer_quantity)
+            
+            # Add total load to daily total
+            daily_total_load += total_load
+
+            # Determine limits with tolerance
+            limit_vol = None
+            limit_time = None
+            if route_capacities is not None and route_idx < len(route_capacities):
+                limit_vol = route_capacities[route_idx] * (1 + volume_tolerance)
+            if max_shift_seconds is not None:
+                limit_time = max_shift_seconds * (1 + time_tolerance)
+            
+            # Add capacity to daily total if limit exists
+            if limit_vol is not None:
+                daily_total_capacity += limit_vol
+
+            # Check success/failure status
+            vol_ok = True if limit_vol is None else (total_load <= limit_vol)
+            time_ok = True if limit_time is None else (metrics['duration'] <= limit_time)
+            is_success = vol_ok and time_ok
+
+            # Determine status string
+            if is_success:
+                status_string = "OK"
+            else:
+                status_parts = []
+                if not vol_ok:
+                    status_parts.append("Overload")
+                if not time_ok:
+                    status_parts.append("Overtime")
+                status_string = "+".join(status_parts)
+
+            # Add granular route metrics
+            route_data = {
+                "route_id": route_idx,
+                "num_stops": metrics['num_stops'],
+                "total_load": total_load,
+                "distance_meters": metrics['distance'],
+                "duration_seconds": metrics['duration'],
+                "success": is_success,
+                "status": status_string
+            }
+            
+            # Add limit fields if available
+            if limit_vol is not None:
+                route_data["limit_vol"] = limit_vol
+            if limit_time is not None:
+                route_data["limit_time"] = limit_time
+            
+            route_breakdown.append(route_data)
+
+            # Aggregate daily totals
+            daily_total_distance += metrics['distance']
+            daily_max_duration = max(daily_max_duration, metrics['duration'])
+            daily_total_stops += metrics['num_stops']
+            active_routes += 1
+
+    # Calculate fleet utilization (percentage of routes used)
+    fleet_utilization = (active_routes / len(master_routes) * 100) if master_routes else 0
+
+    # Return daily results for this date
+    return {
+        'Date': date,
+        'Total_Distance_km': daily_total_distance / 1000.0,  # Convert meters to km
+        'Max_Shift_Duration_hours': daily_max_duration / 3600.0,  # Convert seconds to hours
+        'Fleet_Utilization_pct': fleet_utilization,
+        'Active_Customers': len(active_nodes),
+        'Variance_Customers': len(variance_customers),
+        'Total_Stops': daily_total_stops,
+        'Active_Routes': active_routes,
+        'Route_Breakdown': route_breakdown,
+        'Daily_Total_Duration': daily_total_duration,
+        'Daily_Total_Capacity': daily_total_capacity,
+        'Daily_Total_Load': daily_total_load
+    }
+
+
 def run_historical_simulation(
     historical_data: pd.DataFrame,
     master_routes: List[List[int]],
@@ -186,119 +358,41 @@ def run_historical_simulation(
 
     logger.info(f"Processing {len(unique_dates)} unique dates")
 
-    for date in sorted(unique_dates):
-        # Get active customers for this date
-        day_data = historical_data[historical_data[date_col] == date]
-        active_customer_ids = set(day_data[customer_id_col].dropna().unique())
-
-        # Convert customer IDs to matrix indices
-        active_nodes = set()
-        variance_customers = []
-
-        for customer_id in active_customer_ids:
-            if customer_id in node_map:
-                active_nodes.add(node_map[customer_id])
-            else:
-                # Customer not in master routes (variance/ghost customer)
-                variance_customers.append(customer_id)
-
-        # Calculate metrics for each master route (sub-routes)
-        daily_total_distance = 0.0
-        daily_max_duration = 0.0
-        daily_total_stops = 0
-        active_routes = 0
-        route_breakdown = []
-
-        for route_idx, master_route in enumerate(master_routes):
-            # Create sub-route for this date
-            sub_route = create_sub_route(master_route, active_nodes, depot)
-
-            # Only process routes with at least one customer stop
-            if len(sub_route) > 2:  # More than just [depot, depot]
-                metrics = calculate_route_metrics(
-                    sub_route,
-                    distance_matrix,
-                    time_matrix,
-                    service_time_seconds,
-                    depot
-                )
-
-                # Calculate total load for this route
-                total_load = 0.0
-                for node in sub_route:
-                    if node != depot and node in reverse_node_map:
-                        customer_id = reverse_node_map[node]
-                        customer_orders = day_data[day_data[customer_id_col] == customer_id]
-                        if not customer_orders.empty:
-                            # Sum quantity for this customer on this date
-                            customer_quantity = customer_orders[quantity_col].sum()
-                            if pd.notna(customer_quantity):
-                                total_load += float(customer_quantity)
-
-                # Determine limits with tolerance
-                limit_vol = None
-                limit_time = None
-                if route_capacities is not None and route_idx < len(route_capacities):
-                    limit_vol = route_capacities[route_idx] * (1 + volume_tolerance)
-                if max_shift_seconds is not None:
-                    limit_time = max_shift_seconds * (1 + time_tolerance)
-
-                # Check success/failure status
-                vol_ok = True if limit_vol is None else (total_load <= limit_vol)
-                time_ok = True if limit_time is None else (metrics['duration'] <= limit_time)
-                is_success = vol_ok and time_ok
-
-                # Determine status string
-                if is_success:
-                    status_string = "OK"
-                else:
-                    status_parts = []
-                    if not vol_ok:
-                        status_parts.append("Overload")
-                    if not time_ok:
-                        status_parts.append("Overtime")
-                    status_string = "+".join(status_parts)
-
-                # Add granular route metrics
-                route_data = {
-                    "route_id": route_idx,
-                    "num_stops": metrics['num_stops'],
-                    "total_load": total_load,
-                    "distance_meters": metrics['distance'],
-                    "duration_seconds": metrics['duration'],
-                    "success": is_success,
-                    "status": status_string
-                }
-                
-                # Add limit fields if available
-                if limit_vol is not None:
-                    route_data["limit_vol"] = limit_vol
-                if limit_time is not None:
-                    route_data["limit_time"] = limit_time
-                
-                route_breakdown.append(route_data)
-
-                # Aggregate daily totals
-                daily_total_distance += metrics['distance']
-                daily_max_duration = max(daily_max_duration, metrics['duration'])
-                daily_total_stops += metrics['num_stops']
-                active_routes += 1
-
-        # Calculate fleet utilization (percentage of routes used)
-        fleet_utilization = (active_routes / len(master_routes) * 100) if master_routes else 0
-
-        # Store daily results
-        daily_results.append({
-            'Date': date,
-            'Total_Distance_km': daily_total_distance / 1000.0,  # Convert meters to km
-            'Max_Shift_Duration_hours': daily_max_duration / 3600.0,  # Convert seconds to hours
-            'Fleet_Utilization_pct': fleet_utilization,
-            'Active_Customers': len(active_nodes),
-            'Variance_Customers': len(variance_customers),
-            'Total_Stops': daily_total_stops,
-            'Active_Routes': active_routes,
-            'Route_Breakdown': route_breakdown
-        })
+    # Use ProcessPoolExecutor to run days in parallel
+    with ProcessPoolExecutor() as executor:
+        futures = []
+        for date in sorted(unique_dates):
+            # Filter data for this specific date here to minimize pickling size
+            day_data = historical_data[historical_data[date_col] == date]
+            
+            futures.append(executor.submit(
+                _process_single_date,
+                date=date,
+                day_data=day_data,  # Pass pre-filtered data
+                master_routes=master_routes,
+                distance_matrix=distance_matrix,
+                time_matrix=time_matrix,
+                node_map=node_map,
+                reverse_node_map=reverse_node_map,
+                service_time_seconds=service_time_seconds,
+                depot=depot,
+                route_capacities=route_capacities,
+                max_shift_seconds=max_shift_seconds,
+                volume_tolerance=volume_tolerance,
+                time_tolerance=time_tolerance,
+                customer_id_col=customer_id_col,
+                quantity_col=quantity_col
+            ))
+        
+        for future in as_completed(futures):
+            try:
+                result = future.result()
+                daily_results.append(result)
+            except Exception as e:
+                logger.error(f"Day simulation failed: {e}")
+    
+    # Sort results by date after collecting (since parallel execution scrambles order)
+    daily_results.sort(key=lambda x: x['Date'])
     
     # Create results DataFrame
     results_df = pd.DataFrame(daily_results)

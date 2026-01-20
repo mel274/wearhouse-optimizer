@@ -191,11 +191,51 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 st.session_state.valid_coords_for_simulation = valid_coords
 
                 if solution['solution_found']:
-                    st.success("Optimization completed successfully!")
-                else:
-                    st.error("Optimization failed.")
-                if solution['solution_found']:
-                    st.success("Optimization completed successfully!")
+                    
+                    
+                    # Automatic Simulation: Run historical simulation immediately after optimization
+                    required_session_keys = ['raw_data', 'distance_matrix', 'time_matrix', 'node_map']
+                    missing_keys = [key for key in required_session_keys if not hasattr(st.session_state, key) or getattr(st.session_state, key) is None]
+                    
+                    if not missing_keys:
+                        try:
+                            with st.spinner("Running historical simulation..."):
+                                # Build route capacities list based on vehicle type
+                                route_metrics = solution.get('route_metrics', [])
+                                route_capacities = []
+                                small_truck_vol = services['fleet_settings']['small_truck_vol']
+                                big_truck_vol = services['fleet_settings']['big_truck_vol']
+                                for idx in range(len(solution['routes'])):
+                                    if idx < len(route_metrics):
+                                        vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
+                                        if vehicle_type == 'Small':
+                                            route_capacities.append(small_truck_vol)
+                                        else:
+                                            route_capacities.append(big_truck_vol)
+                                    else:
+                                        # Default to big truck if unknown
+                                        route_capacities.append(big_truck_vol)
+                                
+                                sim_results = run_historical_simulation(
+                                    historical_data=st.session_state.raw_data,
+                                    master_routes=solution['routes'],
+                                    distance_matrix=st.session_state.distance_matrix,
+                                    time_matrix=st.session_state.time_matrix,
+                                    node_map=st.session_state.node_map,
+                                    service_time_seconds=params['service_time_seconds'],
+                                    date_col='תאריך אספקה',
+                                    customer_id_col="מס' לקוח",
+                                    quantity_col='total_volume_m3',
+                                    route_capacities=route_capacities,
+                                    max_shift_seconds=params.get('max_shift_seconds'),
+                                    volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
+                                    time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
+                                )
+                                st.session_state.simulation_results = sim_results
+                        except Exception as e:
+                            logger.error(f"Simulation failed: {e}")
+                            st.warning(f"Routes generated successfully, but historical simulation failed. Error: {str(e)}")
+                            st.session_state.simulation_results = None
                 else:
                     st.error("Optimization failed.")
 
@@ -240,14 +280,6 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             )
             st.components.v1.html(phase2_map._repr_html_(), height=700)
 
-            # View Mode Toggle
-            view_mode = st.radio(
-                "Select View Mode",
-                options=["Static Route View", "Routes per Day"],
-                horizontal=True,
-                key="route_view_mode"
-            )
-
             # Expandable Route Details
             st.subheader("Route Details")
 
@@ -257,163 +289,13 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             route_metrics = solution.get('route_metrics', [])
 
-            if st.session_state.get("route_view_mode") == "Static Route View":
-                # Use scaled effective volume demands (same as optimization)
-                SCALING_FACTOR = 1000
+            # Routes per Day view (default)
+            # Check if simulation results exist and are not empty
+            if st.session_state.get('simulation_results') is not None and not st.session_state.simulation_results.empty:
+                sim_results = st.session_state.simulation_results
+                
+                # Retrieve Safety Factor
                 safety_factor = services['fleet_settings']['safety_factor']
-                force_volume = valid_coords[demand_col].fillna(0)
-                effective_volume = force_volume / safety_factor
-                valid_coords['effective_volume'] = effective_volume
-                demands = [0] + np.ceil(effective_volume * SCALING_FACTOR).astype(int).tolist()
-                params = st.session_state.optimization_params
-
-                for idx, route in enumerate(solution['routes']):
-                    if len(route) <= 2: continue
-
-                    current_load = sum(demands[node] for node in route)
-                    r_metrics = route_metrics[idx] if idx < len(route_metrics) else {'distance': 0, 'duration': 0}
-                    dist_km = r_metrics.get('distance', 0) / 1000
-                    dur_str = utils.format_time(r_metrics.get('duration', 0))
-
-                    # Get vehicle type from route metrics
-                    vehicle_type = r_metrics.get('vehicle_type', 'Unknown')
-                    # Get the appropriate capacity based on vehicle type
-                    if vehicle_type == 'Small':
-                        vehicle_capacity = params.get('small_capacity', small_capacity)
-                    else:
-                        vehicle_capacity = params.get('big_capacity', big_capacity)
-
-                    # Calculate route item load (total quantity in items)
-                    route_item_load = 0
-                    for node_idx in route[1:-1]:  # Skip depot (first and last nodes)
-                        if node_idx > 0:  # Skip depot node
-                            customer = valid_coords.iloc[node_idx - 1]
-                            quantity = customer.get('avg_quantity', 0)
-                            if pd.notna(quantity):
-                                route_item_load += float(quantity)
-
-                    # Calculate loaded volume for this route
-                    # Sum effective_volume (includes safety factor buffer) for all customers on this route
-                    loaded_volume = 0.0
-                    for node_idx in route[1:-1]:  # Skip depot (first and last nodes)
-                        if node_idx > 0:  # Skip depot node
-                            customer = valid_coords.iloc[node_idx - 1]
-                            volume = customer.get('effective_volume', 0)
-                            if pd.notna(volume):
-                                loaded_volume += float(volume)
-
-                    # Determine truck volume capacity based on vehicle type
-                    if vehicle_type == 'Small':
-                        truck_vol_capacity = small_truck_vol
-                    else:
-                        truck_vol_capacity = big_truck_vol
-
-                    # Calculate volume utilization percentage
-                    vol_percent = (loaded_volume / truck_vol_capacity * 100) if truck_vol_capacity > 0 else 0.0
-                    vol_str = f" | Vol (Eff): {loaded_volume:.1f} / {truck_vol_capacity:.1f} m³ ({vol_percent:.0f}%)"
-
-                    warnings = []
-                    if current_load > vehicle_capacity: warnings.append("⚠️ Overloaded")
-                    if r_metrics.get('duration', 0) > params['max_shift_seconds']: warnings.append("⚠️ Overtime")
-                    status_str = " ".join(warnings) if warnings else "✅ OK"
-
-                    header = f"Truck {idx+1} ({vehicle_type}): {len(route)-2} Stops | Load: {int(route_item_load)} | Dist: {dist_km:.1f} km | Time: {dur_str}{vol_str} {status_str}"
-
-                    with st.expander(header):
-                        stops_data = []
-                        for stop_order, node_idx in enumerate(route[1:-1]):
-                            if node_idx > 0:
-                                customer = valid_coords.iloc[node_idx - 1]
-                                stops_data.append({
-                                    "Stop #": stop_order + 1,
-                                    "Name": customer.get("שם לקוח", "")
-                                })
-
-                        if stops_data:
-                            st.table(pd.DataFrame(stops_data))
-                        else:
-                            st.write("Warehouse return only.")
-
-                # Global Metrics
-                m = solution['metrics']
-
-                # Calculate total volume used across all routes
-                total_loaded_volume = 0.0
-                total_truck_capacity = 0.0
-
-                for idx, route in enumerate(solution['routes']):
-                    if len(route) <= 2: continue
-
-                    r_metrics = solution.get('route_metrics', [])
-                    if idx < len(r_metrics):
-                        vehicle_type = r_metrics[idx].get('vehicle_type', 'Unknown')
-                        if vehicle_type == 'Small':
-                            truck_capacity = small_truck_vol
-                        else:
-                            truck_capacity = big_truck_vol
-
-                        # Calculate volume for this route
-                        route_volume = 0.0
-                        for node_idx in route[1:-1]:
-                            if node_idx > 0:
-                                customer = valid_coords.iloc[node_idx - 1]
-                                volume = customer.get('effective_volume', 0)
-                                if pd.notna(volume):
-                                    route_volume += float(volume)
-
-                        total_loaded_volume += route_volume
-                        total_truck_capacity += truck_capacity
-
-                total_vol_percent = (total_loaded_volume / total_truck_capacity * 100) if total_truck_capacity > 0 else 0.0
-
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Total Distance", f"{m['total_distance']/1000:.1f} km")
-                c2.metric("Total Time", f"{m['total_time']/3600:.1f} h")
-                c3.metric("Vehicles Used", m['num_vehicles_used'])
-                c4.metric("Total Volume Used (Effective)", f"{total_loaded_volume:.1f} / {total_truck_capacity:.1f} m³ ({total_vol_percent:.0f}%)")
-
-            else:
-                # Prerequisites check for Routes per Day view
-                required_session_keys = ['raw_data', 'distance_matrix', 'time_matrix', 'node_map']
-                missing_keys = [key for key in required_session_keys if not hasattr(st.session_state, key) or getattr(st.session_state, key) is None]
-
-                if missing_keys:
-                    st.warning(f"Missing required data for simulation: {', '.join(missing_keys)}. Please run optimization first.")
-                    return
-
-                # Run historical simulation
-                with st.spinner("Running historical simulation..."):
-                    # Build route capacities list based on vehicle type
-                    route_metrics = solution.get('route_metrics', [])
-                    route_capacities = []
-                    small_truck_vol = services['fleet_settings']['small_truck_vol']
-                    big_truck_vol = services['fleet_settings']['big_truck_vol']
-                    for idx in range(len(solution['routes'])):
-                        if idx < len(route_metrics):
-                            vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
-                            if vehicle_type == 'Small':
-                                route_capacities.append(small_truck_vol)
-                            else:
-                                route_capacities.append(big_truck_vol)
-                        else:
-                            # Default to big truck if unknown
-                            route_capacities.append(big_truck_vol)
-                    
-                    sim_results = run_historical_simulation(
-                        historical_data=st.session_state.raw_data,
-                        master_routes=solution['routes'],
-                        distance_matrix=st.session_state.distance_matrix,
-                        time_matrix=st.session_state.time_matrix,
-                        node_map=st.session_state.node_map,
-                        service_time_seconds=st.session_state.optimization_params['service_time_seconds'],
-                        date_col='תאריך אספקה',
-                        customer_id_col="מס' לקוח",
-                        quantity_col='total_volume_m3',
-                        route_capacities=route_capacities,
-                        max_shift_seconds=st.session_state.optimization_params.get('max_shift_seconds'),
-                        volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
-                        time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
-                    )
 
                 # Data transformation: Pivot from date-centric to route-centric
                 route_stats = {}
@@ -461,7 +343,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
                     # Calculate averages for this route
                     avg_stops = np.mean([day['Stops'] for day in route_daily_data])
-                    avg_volume = np.mean([day['Volume'] for day in route_daily_data])
+                    avg_volume = np.mean([day['Volume'] for day in route_daily_data]) / safety_factor
                     avg_distance = np.mean([day['Distance (km)'] for day in route_daily_data])
                     avg_time = np.mean([day['Time (h)'] for day in route_daily_data])
 
@@ -490,18 +372,29 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 # Footer: System-wide daily averages and totals
                 if not sim_results.empty:
                     system_avg_distance = sim_results['Total_Distance_km'].mean()
-                    system_avg_time = sim_results['Max_Shift_Duration_hours'].mean()
+                    system_avg_time = sim_results['Daily_Total_Duration'].mean() / 3600.0  # Convert seconds to hours
+                    avg_stops_daily = sim_results['Total_Stops'].mean()
+                    
+                    # Calculate total volume usage
+                    total_load_sum = sim_results['Daily_Total_Load'].sum()
+                    total_capacity_sum = sim_results['Daily_Total_Capacity'].sum()
+                    total_volume_usage = (total_load_sum / total_capacity_sum * 100) if total_capacity_sum > 0 else 0.0
 
                     # Calculate grand totals for the entire simulation period
                     total_distance_all_days = sim_results['Total_Distance_km'].sum()
                     total_time_all_days = sim_results['Max_Shift_Duration_hours'].sum()
 
                     st.markdown("---")
-                    col1, col2, col3, col4 = st.columns(4)
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
                     col1.metric("System Avg Daily Distance", f"{system_avg_distance:.1f} km")
                     col2.metric("Total Daily Distance", f"{total_distance_all_days:.1f} km")
-                    col3.metric("System Avg Daily Time", f"{system_avg_time:.1f} hours")
+                    col3.metric("Avg Daily Man-Hours", f"{system_avg_time:.1f} h")
                     col4.metric("Total Daily Time", f"{total_time_all_days:.1f} hours")
+                    col5.metric("Avg Daily Stops", f"{avg_stops_daily:.1f}")
+                    col6.metric("Total Volume Usage", f"{total_volume_usage:.1f}%")
+            else:
+                # Edge case: simulation results not available
+                st.info("Daily simulation statistics are unavailable. Please check the 'Static Routes' tab for route details.")
 
         else:
             st.error("Optimization failed.")
