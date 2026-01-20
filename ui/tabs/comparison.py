@@ -145,33 +145,37 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
             time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
         )
 
-    # Convert Date column to datetime for filtering
-    simulation_results['Date'] = pd.to_datetime(simulation_results['Date'])
+    # Safety guard: Check if simulation results are empty
+    if simulation_results is not None and not simulation_results.empty:
+        # Convert Date column to datetime for filtering
+        simulation_results['Date'] = pd.to_datetime(simulation_results['Date'])
 
-    # Use ComparisonService to calculate comparison metrics
-    comparison_metrics = services['comparison_service'].calculate_comparison_metrics(
-        simulation_results, filtered_data, summary_total_km, summary_total_hours,
-        total_days_in_summary, (end_date - start_date).days + 1, start_date, end_date
-    )
+        # Use ComparisonService to calculate comparison metrics
+        comparison_metrics = services['comparison_service'].calculate_comparison_metrics(
+            simulation_results, filtered_data, summary_total_km, summary_total_hours,
+            total_days_in_summary, (end_date - start_date).days + 1, start_date, end_date
+        )
 
-    # Display results
-    num_selected_days = comparison_metrics['num_selected_days']
+        # Display results
+        num_selected_days = comparison_metrics['num_selected_days']
 
-    # Fleet Utilization Comparison
-    st.subheader("Fleet Utilization")
+        # Fleet Utilization Comparison
+        st.subheader("Fleet Utilization")
 
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("System Avg Trucks", f"{comparison_metrics['system_avg_trucks']:.1f}")
-    with col2:
-        if comparison_metrics['historical_avg_trucks'] is not None:
-            st.metric("Historical Avg Trucks", f"{comparison_metrics['historical_avg_trucks']:.1f}")
-        else:
-            st.metric("Historical Avg Trucks", "N/A")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("System Avg Trucks", f"{comparison_metrics['system_avg_trucks']:.1f}")
+        with col2:
+            if comparison_metrics['historical_avg_trucks'] is not None:
+                st.metric("Historical Avg Trucks", f"{comparison_metrics['historical_avg_trucks']:.1f}")
+            else:
+                st.metric("Historical Avg Trucks", "N/A")
 
-    # Comparison Table
-    st.subheader("Comparison: Projected vs. Optimized")
+        # Comparison Table
+        st.subheader("Comparison: Projected vs. Optimized")
 
-    if comparison_metrics['comparison_data']:
-        comp_df = pd.DataFrame(comparison_metrics['comparison_data'])
-        st.dataframe(comp_df.set_index('Metric'), width="stretch")
+        if comparison_metrics['comparison_data']:
+            comp_df = pd.DataFrame(comparison_metrics['comparison_data'])
+            st.dataframe(comp_df.set_index('Metric'), width="stretch")
+    else:
+        st.warning("No simulation data available for this period.")

@@ -109,6 +109,24 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
     num_small_trucks = services.get('num_small_trucks', 6)
     total_fleet_size = num_small_trucks + num_big_trucks
 
+    # --- Advanced Solver Controls ---
+    with st.sidebar.expander("Advanced Optimization"):
+        solver_time_limit_minutes = st.number_input(
+            "Solver Time Limit (Minutes)",
+            min_value=1,
+            value=3,
+            help="Maximum time the solver will run. Longer times may yield better solutions for complex problems."
+        )
+        first_solution_strategy = st.selectbox(
+            "Optimization Strategy",
+            options=["Global Best", "Constraint Focused"],
+            index=0,
+            help="Strategy for finding the initial solution. 'Constraint Focused' prioritizes constraints, 'Global Best' seeks globally optimal arcs."
+        )
+    
+    # Convert minutes to seconds for the solver
+    solver_time_limit_seconds = solver_time_limit_minutes * 60
+
     if st.button("Run Optimization", type="primary"):
         try:
             wh_coords = None
@@ -160,7 +178,10 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     'small_capacity': opt_small_capacity,      # Use boosted capacity
                     'big_capacity': opt_big_capacity,          # Use boosted capacity
                     'max_shift_seconds': opt_shift_seconds,    # Use boosted time
-                    'service_time_seconds': services['service_time_minutes'] * 60
+                    'service_time_seconds': services['service_time_minutes'] * 60,
+                    # Advanced solver controls
+                    'time_limit_seconds': solver_time_limit_seconds,
+                    'first_solution_strategy': first_solution_strategy
                 }
 
                 # CALL OPTIMIZER
@@ -170,6 +191,9 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     params,
                     coords=matrix_coords
                 )
+                
+                # Notify user that optimization finished
+                st.toast("Optimization Finished!")
 
                 st.session_state.solution = solution
 

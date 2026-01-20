@@ -274,13 +274,36 @@ class RouteOptimizer:
         
         # Set search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-        search_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        )
+        
+        # Dynamic First Solution Strategy (High-Quality Only)
+        strategy_name = params.get('first_solution_strategy', Config.FIRST_SOLUTION_STRATEGY)
+        if strategy_name == 'Constraint Focused':
+            search_parameters.first_solution_strategy = (
+                routing_enums_pb2.FirstSolutionStrategy.PATH_MOST_CONSTRAINED_ARC
+            )
+        elif strategy_name == 'Global Best':
+            search_parameters.first_solution_strategy = (
+                routing_enums_pb2.FirstSolutionStrategy.GLOBAL_CHEAPEST_ARC
+            )
+        else:
+            # Default to Global Best if invalid strategy provided
+            search_parameters.first_solution_strategy = (
+                routing_enums_pb2.FirstSolutionStrategy.GLOBAL_CHEAPEST_ARC
+            )
+        
+        # Use Guided Local Search (better for longer runs)
         search_parameters.local_search_metaheuristic = (
-            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 150  # 150 second time limit
+        
+        # Dynamic Time Limit
+        time_limit = params.get('time_limit_seconds', Config.SOLVER_TIME_LIMIT_SECONDS)
+        search_parameters.time_limit.seconds = time_limit
+        
+        # Enable solver logging
+        search_parameters.log_search = True
+        
+        logger.info(f"Solver settings: strategy={strategy_name}, metaheuristic=GUIDED_LOCAL_SEARCH, time_limit={time_limit}s")
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")

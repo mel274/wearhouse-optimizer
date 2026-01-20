@@ -29,6 +29,10 @@ class Config:
     CANDIDATE_PERCENTAGE = 0.3
     MIN_K_START = 1
     
+    # Solver controls (OR-Tools)
+    SOLVER_TIME_LIMIT_SECONDS = 180  # Default: 3 minutes
+    FIRST_SOLUTION_STRATEGY = 'Global Best'  # Default strategy
+    
     # Geographic and visualization parameters
     ISRAEL_LAT_MIN = 29.0
     ISRAEL_LAT_MAX = 34.0

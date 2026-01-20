@@ -345,6 +345,15 @@ def run_historical_simulation(
     """
     logger.info(f"Starting historical simulation for {len(historical_data)} historical records")
 
+    # Hebrew date column heuristic - find column containing "תאריך" if date_col not found
+    if date_col not in historical_data.columns:
+        hebrew_date_cols = [col for col in historical_data.columns if 'תאריך' in col]
+        if hebrew_date_cols:
+            date_col = hebrew_date_cols[0]
+            logger.info(f"Using Hebrew date column: '{date_col}'")
+        else:
+            raise ValueError(f"Date column '{date_col}' not found and no Hebrew date column containing 'תאריך' was found in available columns: {list(historical_data.columns)}")
+
     # Parse dates if needed
     if historical_data[date_col].dtype == 'object':
         historical_data[date_col] = pd.to_datetime(historical_data[date_col], dayfirst=True, errors='coerce')
