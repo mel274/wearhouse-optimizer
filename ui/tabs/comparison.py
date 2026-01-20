@@ -140,9 +140,7 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
             customer_id_col="מס' לקוח",
             depot=0,
             route_capacities=route_capacities,
-            max_shift_seconds=st.session_state.optimization_params.get('max_shift_seconds'),
-            volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
-            time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
+            max_shift_seconds=st.session_state.optimization_params.get('max_shift_seconds')
         )
 
     # Safety guard: Check if simulation results are empty

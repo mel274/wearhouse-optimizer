@@ -123,12 +123,27 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             index=0,
             help="Strategy for finding the initial solution. 'Constraint Focused' prioritizes constraints, 'Global Best' seeks globally optimal arcs."
         )
+        target_failure_rate = st.slider(
+            "Allowed Failure Rate (%)",
+            min_value=0.0,
+            max_value=10.0,
+            value=Config.DEFAULT_TARGET_FAILURE_RATE,
+            step=0.1,
+            help="Maximum acceptable failure rate for routes (volume/time constraints exceeded)."
+        )
     
     # Convert minutes to seconds for the solver
     solver_time_limit_seconds = solver_time_limit_minutes * 60
 
     if st.button("Run Optimization", type="primary"):
         try:
+            # Get target from session state (set by the slider in Phase 1)
+            target_failure_rate = st.session_state.get('target_failure_rate', Config.DEFAULT_TARGET_FAILURE_RATE)
+
+            # Initialize iterative loop variables
+            current_multipliers = {}  # Start empty (defaults will be used by DataManager)
+            best_solution = None
+
             wh_coords = None
             manual_warehouse_address = services.get('warehouse_address')
 
@@ -153,115 +168,225 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             st.session_state.warehouse_coords = wh_coords
 
-            with st.spinner("calculating optimization..."):
-                matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
-                demands = [0] + estimated_demand.tolist()
+            with st.status("Running Iterative Optimization...", expanded=True) as status:
+                for iteration in range(1, Config.MAX_OPTIMIZATION_ITERATIONS + 1):
+                    status.write(f"**Iteration {iteration}/{Config.MAX_OPTIMIZATION_ITERATIONS}**")
 
-                # Retrieve tolerances from fleet settings
-                volume_tolerance = services['fleet_settings'].get('volume_tolerance', 0.0)
-                time_tolerance = services['fleet_settings'].get('time_tolerance', 0.0)
+                    # 1. Update Data Phase
+                    # Pass current_multipliers to recalculate forces dynamically
+                    st.session_state.data = services['data_manager'].recalculate_customer_force(
+                        st.session_state.data,
+                        st.session_state.raw_data,
+                        buffer_multipliers=current_multipliers
+                    )
 
-                # Calculate boosted capacities (apply volume tolerance)
-                opt_small_capacity = int(small_capacity * (1 + volume_tolerance))
-                opt_big_capacity = int(big_capacity * (1 + volume_tolerance))
+                    # 2. Preparation Phase
+                    matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
+                    demands = [0] + estimated_demand.tolist()
 
-                # Calculate boosted time (apply time tolerance)
-                base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
-                opt_shift_seconds = int(base_shift_seconds * (1 + time_tolerance))
+                    # Pressure Cooker: Double capacity for solver to ensure solution (2x)
+                    # Simulation will use real capacity (1x) to detect actual failures
+                    opt_small_capacity = small_capacity * 2  # 2x for solver
+                    opt_big_capacity = big_capacity * 2      # 2x for solver
 
-                logger.info(f"Optimizing with tolerances: Vol+{volume_tolerance:.1%}, Time+{time_tolerance:.1%}")
+                    # Use exact shift time (no tolerance buffers)
+                    base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
+                    opt_shift_seconds = base_shift_seconds
 
-                params = {
-                    'fleet_size': total_fleet_size,
-                    'num_small_trucks': num_small_trucks,
-                    'num_big_trucks': num_big_trucks,
-                    'small_capacity': opt_small_capacity,      # Use boosted capacity
-                    'big_capacity': opt_big_capacity,          # Use boosted capacity
-                    'max_shift_seconds': opt_shift_seconds,    # Use boosted time
-                    'service_time_seconds': services['service_time_minutes'] * 60,
-                    # Advanced solver controls
-                    'time_limit_seconds': solver_time_limit_seconds,
-                    'first_solution_strategy': first_solution_strategy
-                }
+                    logger.info("Optimizing with strict physical limits (no tolerance buffers)")
 
-                # CALL OPTIMIZER
-                solution = services['route_optimizer'].solve(
-                    [f"Loc {i}" for i in range(len(matrix_coords))],
-                    demands,
-                    params,
-                    coords=matrix_coords
-                )
-                
-                # Notify user that optimization finished
-                st.toast("Optimization Finished!")
+                    params = {
+                        'fleet_size': total_fleet_size,
+                        'num_small_trucks': num_small_trucks,
+                        'num_big_trucks': num_big_trucks,
+                        'small_capacity': opt_small_capacity,      # Strict physical capacity
+                        'big_capacity': opt_big_capacity,          # Strict physical capacity
+                        'max_shift_seconds': opt_shift_seconds,    # Strict physical time limit
+                        'service_time_seconds': services['service_time_minutes'] * 60,
+                        # Advanced solver controls
+                        'time_limit_seconds': solver_time_limit_seconds,
+                        'first_solution_strategy': first_solution_strategy,
+                        # Iterative risk-managed engine
+                        'target_failure_rate': target_failure_rate
+                    }
 
-                st.session_state.solution = solution
+                    # 3. Solver Phase
+                    solution = services['route_optimizer'].solve(
+                        [f"Loc {i}" for i in range(len(matrix_coords))],
+                        demands,
+                        params,
+                        coords=matrix_coords
+                    )
 
-                # Store matrices and node map for historical simulation
-                # Reuse matrix data from solution to avoid duplicate API calls
-                if 'matrix_data' in solution:
-                    # Use matrix data already fetched during optimization
-                    matrix_data = solution['matrix_data']
-                    st.session_state.distance_matrix = matrix_data['distances']
-                    st.session_state.time_matrix = matrix_data['durations']
-                else:
-                    # Fallback: fetch if not in solution (shouldn't happen, but defensive)
-                    logger.warning("Matrix data not found in solution, fetching from API")
-                    matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
-                    st.session_state.distance_matrix = matrix_data['distances']
-                    st.session_state.time_matrix = matrix_data['durations']
-                st.session_state.node_map = create_node_map(valid_coords)
-                st.session_state.optimization_params = params
-                st.session_state.valid_coords_for_simulation = valid_coords
+                    # Safety Guard: Check if solver found a solution
+                    if solution is not None and solution.get('solution_found', False):
+                        # Temporarily assume latest is best (Phase 2 - will be improved in Phase 3)
+                        best_solution = solution
 
-                if solution['solution_found']:
-                    
-                    
-                    # Automatic Simulation: Run historical simulation immediately after optimization
-                    required_session_keys = ['raw_data', 'distance_matrix', 'time_matrix', 'node_map']
-                    missing_keys = [key for key in required_session_keys if not hasattr(st.session_state, key) or getattr(st.session_state, key) is None]
-                    
-                    if not missing_keys:
+                    # 4. Simulation Phase (The "Reality Check")
+                    sim_results = None
+                    if solution['solution_found']:
+                        # Store matrices and node map for historical simulation
+                        # Reuse matrix data from solution to avoid duplicate API calls
+                        if 'matrix_data' in solution:
+                            # Use matrix data already fetched during optimization
+                            matrix_data = solution['matrix_data']
+                            st.session_state.distance_matrix = matrix_data['distances']
+                            st.session_state.time_matrix = matrix_data['durations']
+                        else:
+                            # Fallback: fetch if not in solution (shouldn't happen, but defensive)
+                            logger.warning("Matrix data not found in solution, fetching from API")
+                            matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
+                            st.session_state.distance_matrix = matrix_data['distances']
+                            st.session_state.time_matrix = matrix_data['durations']
+
+                        st.session_state.node_map = create_node_map(valid_coords)
+                        st.session_state.optimization_params = params
+                        st.session_state.valid_coords_for_simulation = valid_coords
+
+                        # Run simulation
                         try:
-                            with st.spinner("Running historical simulation..."):
-                                # Build route capacities list based on vehicle type
-                                route_metrics = solution.get('route_metrics', [])
-                                route_capacities = []
-                                small_truck_vol = services['fleet_settings']['small_truck_vol']
-                                big_truck_vol = services['fleet_settings']['big_truck_vol']
-                                for idx in range(len(solution['routes'])):
-                                    if idx < len(route_metrics):
-                                        vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
-                                        if vehicle_type == 'Small':
-                                            route_capacities.append(small_truck_vol)
-                                        else:
-                                            route_capacities.append(big_truck_vol)
+                            # Build route capacities list based on vehicle type
+                            route_metrics = solution.get('route_metrics', [])
+                            route_capacities = []
+                            small_truck_vol = services['fleet_settings']['small_truck_vol']
+                            big_truck_vol = services['fleet_settings']['big_truck_vol']
+                            for idx in range(len(solution['routes'])):
+                                if idx < len(route_metrics):
+                                    vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
+                                    if vehicle_type == 'Small':
+                                        route_capacities.append(small_truck_vol)
                                     else:
-                                        # Default to big truck if unknown
                                         route_capacities.append(big_truck_vol)
-                                
-                                sim_results = run_historical_simulation(
-                                    historical_data=st.session_state.raw_data,
-                                    master_routes=solution['routes'],
-                                    distance_matrix=st.session_state.distance_matrix,
-                                    time_matrix=st.session_state.time_matrix,
-                                    node_map=st.session_state.node_map,
-                                    service_time_seconds=params['service_time_seconds'],
-                                    date_col='תאריך אספקה',
-                                    customer_id_col="מס' לקוח",
-                                    quantity_col='total_volume_m3',
-                                    route_capacities=route_capacities,
-                                    max_shift_seconds=params.get('max_shift_seconds'),
-                                    volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
-                                    time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
-                                )
-                                st.session_state.simulation_results = sim_results
+                                else:
+                                    # Default to big truck if unknown
+                                    route_capacities.append(big_truck_vol)
+
+                            sim_results = run_historical_simulation(
+                                historical_data=st.session_state.raw_data,
+                                master_routes=solution['routes'],
+                                distance_matrix=st.session_state.distance_matrix,
+                                time_matrix=st.session_state.time_matrix,
+                                node_map=st.session_state.node_map,
+                                service_time_seconds=params['service_time_seconds'],
+                                date_col='תאריך אספקה',
+                                customer_id_col="מס' לקוח",
+                                quantity_col='total_volume_m3',
+                                route_capacities=route_capacities,
+                                max_shift_seconds=params.get('max_shift_seconds')
+                            )
                         except Exception as e:
-                            logger.error(f"Simulation failed: {e}")
-                            st.warning(f"Routes generated successfully, but historical simulation failed. Error: {str(e)}")
-                            st.session_state.simulation_results = None
-                else:
-                    st.error("Optimization failed.")
+                            logger.error(f"Simulation failed in iteration {iteration}: {e}")
+                            sim_results = None
+
+                    # 5. Failure Rate Calculation
+                    if sim_results is not None and not sim_results.empty:
+                        total_days = len(sim_results)
+                        failed_days_count = 0
+
+                        for _, day_row in sim_results.iterrows():
+                            routes = day_row.get('Route_Breakdown', [])
+                            # Check if any route on this day failed
+                            if any(not r.get('success', True) for r in routes):
+                                failed_days_count += 1
+
+                        global_failure_rate = (failed_days_count / total_days * 100) if total_days > 0 else 0.0
+                    else:
+                        global_failure_rate = 100.0  # Default to fail if no sim data
+
+                    status.write(f"Result: {global_failure_rate:.2f}% Failure Rate (Target: {target_failure_rate}%)")
+
+                    # 6. Stop Condition
+                    if global_failure_rate <= target_failure_rate:
+                        status.update(label="Optimization Successful!", state="complete", expanded=False)
+                        st.toast(f"Converged in {iteration} iterations!")
+                        break
+
+                        # 7. Feedback Loop - Intelligence Layer
+                        if iteration < Config.MAX_OPTIMIZATION_ITERATIONS:
+                            # Identify Failed Routes
+                            failed_route_ids = set()
+
+                            for _, day_row in sim_results.iterrows():
+                                routes = day_row.get('Route_Breakdown', [])
+                                # Check if any route on this day failed
+                                for route_data in routes:
+                                    if not route_data.get('success', True):
+                                        failed_route_ids.add(route_data['route_id'])
+
+                            # Target Risky Customers - Smart Group Punishment
+                            penalized_customers = 0
+
+                            for route_idx, route in enumerate(solution['routes']):
+                                if route_idx in failed_route_ids:
+                                    # Get customers on this failed route (excluding depot)
+                                    route_customers = [node for node in route[1:-1] if node > 0]  # Skip depot (0) and any invalid nodes
+
+                                    # Apply penalties to volatile customers on this route
+                                    route_penalized = False
+
+                                    for customer_idx in route_customers:
+                                        # Convert matrix index back to customer data index
+                                        # Matrix index = data index + 1 (because depot is 0)
+                                        if customer_idx > 0:
+                                            data_idx = customer_idx - 1
+
+                                            if data_idx < len(st.session_state.data):
+                                                customer_row = st.session_state.data.iloc[data_idx]
+                                                customer_id = customer_row.get('מס\' לקוח')
+
+                                                if customer_id is not None:
+                                                    # Check volatility (std_volume)
+                                                    std_volume = customer_row.get('std_volume', 0)
+
+                                                    if std_volume > 0.1:  # Ignore noise, focus on truly volatile customers
+                                                        # Apply penalty: increase multiplier
+                                                        current_mult = current_multipliers.get(customer_id, 1.0)
+                                                        new_mult = current_mult + 0.5
+                                                        current_multipliers[customer_id] = min(new_mult, 3.0)  # Clamp at 3.0 max
+                                                        penalized_customers += 1
+                                                        route_penalized = True
+
+                                    # Fallback: if no volatile customers on route, apply smaller penalty to all
+                                    if not route_penalized and route_customers:
+                                        for customer_idx in route_customers:
+                                            data_idx = customer_idx - 1
+                                            if data_idx < len(st.session_state.data):
+                                                customer_row = st.session_state.data.iloc[data_idx]
+                                                customer_id = customer_row.get('מס\' לקוח')
+
+                                                if customer_id is not None:
+                                                    current_mult = current_multipliers.get(customer_id, 1.0)
+                                                    new_mult = current_mult + 0.2  # Smaller penalty
+                                                    current_multipliers[customer_id] = min(new_mult, 3.0)
+                                                    penalized_customers += 1
+
+                            # Report intelligence actions
+                            if penalized_customers > 0:
+                                status.write(f"🧠 Intelligence: Penalized {penalized_customers} customers on {len(failed_route_ids)} failed routes.")
+                            else:
+                                status.write("🧠 Intelligence: No specific customers penalized (continuing with current plan).")
+                        else:
+                            status.update(label="Max iterations reached - Target not met.", state="error", expanded=False)
+                            st.warning(f"Optimization finished but failure rate ({global_failure_rate:.1f}%) exceeds target ({target_failure_rate}%).")
+                    else:
+                        st.error(f"Solver failed to find a feasible solution in Iteration {iteration}. Try increasing fleet size or Time Limits.")
+                        break  # Stop the loop immediately
+
+            # Final Persistence: Ensure results are properly stored and UI refreshes
+            if best_solution is not None:
+                # 1. Persist the Best Result to State
+                st.session_state.solution = best_solution
+                st.session_state.simulation_results = sim_results
+
+                # 2. Persist other necessary context if needed
+                # st.session_state.distance_matrix = ... (if changed)
+
+                # 3. Success Message
+                st.toast("Optimization cycle complete. Updating UI...")
+
+                # 4. Force UI Refresh
+                st.rerun()
 
         except DataValidationError as e:
             st.error(f"Data validation error: {str(e)}")

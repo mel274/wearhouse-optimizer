@@ -255,11 +255,10 @@ class RouteOptimizer:
             True,  # start cumul to zero
             "Capacity"
         )
-        
-        # Add disjunctions (penalties for unassigned nodes)
-        penalty_value = Config.UNSERVED_PENALTY  # Penalty for not serving customers
-        for node in range(1, num_nodes):  # Skip depot (node 0)
-            routing.AddDisjunction([manager.NodeToIndex(node)], penalty_value)
+
+        # Enforce Fleet Load Balancing - penalize imbalance to spread risk across fleet
+        capacity_dim = routing.GetDimensionOrDie("Capacity")
+        capacity_dim.SetGlobalSpanCostCoefficient(10)  # Penalize imbalance between busiest and emptiest truck
         
         # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
         gush_dan_node_indices = data.get('gush_dan_node_indices', set())

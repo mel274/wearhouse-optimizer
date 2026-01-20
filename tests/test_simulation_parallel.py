@@ -63,8 +63,6 @@ def test_simulation_basic():
             depot=0,
             route_capacities=[100.0, 50.0],  # Route capacities
             max_shift_seconds=28800,  # 8 hours
-            volume_tolerance=0.0,
-            time_tolerance=0.0
         )
         
         # Verify results structure

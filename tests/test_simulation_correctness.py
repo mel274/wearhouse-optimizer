@@ -67,9 +67,7 @@ def test_simulation_correctness():
             quantity_col='כמות',
             depot=0,
             route_capacities=[100.0, 50.0],
-            max_shift_seconds=28800,
-            volume_tolerance=0.0,
-            time_tolerance=0.0
+            max_shift_seconds=28800
         )
         results_list.append(results)
     
