@@ -210,16 +210,25 @@ class RouteOptimizer:
         
         time_callback_index = routing.RegisterTransitCallback(time_callback)
         
-        # Add time dimension with max_shift_seconds as the upper bound
-        # The solver will now enforce: Total Route Time (Drive + Service) <= max_shift_seconds
+        # Add time dimension with soft constraints (elastic walls) - 48 hour horizon
+        # Allows solver to exceed time limits with penalties
+        # 1. Add the dimension (returns bool)
         routing.AddDimension(
             time_callback_index,
-            0,  # slack max
-            data['max_shift_seconds'],  # vehicle maximum time (includes drive + service)
-            True,  # start cumul to zero
+            0,  # slack
+            172800,  # horizon (48 hours for soft constraints)
+            True,  # fix_start_cumul_to_zero
             "Time"
         )
-        
+
+        # 2. Retrieve the dimension object explicitly
+        time_dimension = routing.GetDimensionOrDie("Time")
+
+        # Add soft upper bounds for time (elastic constraints)
+        for vehicle_id in range(data['num_vehicles']):
+            index = routing.End(vehicle_id)
+            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 100000)
+
         # Get the Time dimension and set global span cost to balance workloads across drivers
         time_dim = routing.GetDimensionOrDie("Time")
         time_dim.SetGlobalSpanCostCoefficient(100)
@@ -247,14 +256,24 @@ class RouteOptimizer:
         
         demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
         
-        # Add capacity dimension - enforces that total scaled volume demand on a route <= vehicle scaled capacity
-        routing.AddDimensionWithVehicleCapacity(
+        # Add capacity dimension with soft constraints (elastic walls)
+        # 1. Add the dimension (returns bool, discard result)
+        routing.AddDimension(
             demand_callback_index,
-            0,  # slack max
-            data['vehicle_capacities'],  # vehicle maximum scaled capacities (m³ * 1000, list, one per vehicle)
-            True,  # start cumul to zero
+            0,  # slack
+            1000000,  # capacity (infinite for soft constraints)
+            True,  # fix_start_cumul_to_zero
             "Capacity"
         )
+
+        # 2. Retrieve the dimension object explicitly
+        capacity_dimension = routing.GetDimensionOrDie("Capacity")
+
+        # Add soft upper bounds for capacity (elastic constraints)
+        for vehicle_id in range(data['num_vehicles']):
+            index = routing.End(vehicle_id)
+            original_vehicle_capacity = data['vehicle_capacities'][vehicle_id]
+            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 100000)
         
         # Add disjunctions (penalties for unassigned nodes)
         penalty_value = Config.UNSERVED_PENALTY  # Penalty for not serving customers
@@ -280,7 +299,7 @@ class RouteOptimizer:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
         )
-        search_parameters.time_limit.seconds = 150  # 150 second time limit
+        search_parameters.time_limit.seconds = 60  # 60 second time limit for aggressive solving
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")

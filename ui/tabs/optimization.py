@@ -68,7 +68,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         st.error("No geocoded data.")
         return
 
-    demand_col = 'force_volume'  # Volume-based demand (Mean + Std*Buffer)
+    demand_col = 'total_quantity'  # Use actual daily volumes for strict optimization
 
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
@@ -139,27 +139,18 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
                 demands = [0] + estimated_demand.tolist()
 
-                # Retrieve tolerances from fleet settings
-                volume_tolerance = services['fleet_settings'].get('volume_tolerance', 0.0)
-                time_tolerance = services['fleet_settings'].get('time_tolerance', 0.0)
-
-                # Calculate boosted capacities (apply volume tolerance)
-                opt_small_capacity = int(small_capacity * (1 + volume_tolerance))
-                opt_big_capacity = int(big_capacity * (1 + volume_tolerance))
-
-                # Calculate boosted time (apply time tolerance)
+                # Use strict 1x constraints (no tolerances)
                 base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
-                opt_shift_seconds = int(base_shift_seconds * (1 + time_tolerance))
 
-                logger.info(f"Optimizing with tolerances: Vol+{volume_tolerance:.1%}, Time+{time_tolerance:.1%}")
+                logger.info(f"Strict optimization: using raw capacities and time limits")
 
                 params = {
                     'fleet_size': total_fleet_size,
                     'num_small_trucks': num_small_trucks,
                     'num_big_trucks': num_big_trucks,
-                    'small_capacity': opt_small_capacity,      # Use boosted capacity
-                    'big_capacity': opt_big_capacity,          # Use boosted capacity
-                    'max_shift_seconds': opt_shift_seconds,    # Use boosted time
+                    'small_capacity': small_capacity,          # Use raw capacity (1x)
+                    'big_capacity': big_capacity,              # Use raw capacity (1x)
+                    'max_shift_seconds': base_shift_seconds,   # Use raw time (1x)
                     'service_time_seconds': services['service_time_minutes'] * 60
                 }
 
@@ -227,9 +218,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                                     customer_id_col="מס' לקוח",
                                     quantity_col='total_volume_m3',
                                     route_capacities=route_capacities,
-                                    max_shift_seconds=params.get('max_shift_seconds'),
-                                    volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
-                                    time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
+                                    max_shift_seconds=params.get('max_shift_seconds')
                                 )
                                 st.session_state.simulation_results = sim_results
                         except Exception as e:
@@ -271,6 +260,11 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 st.warning(f"Optimization complete with warnings: {num_routes} trucks used. {len(unserved_list)} customers could not be served.")
             else:
                 st.success(f"Optimization complete: {num_routes} trucks used. All customers served.")
+
+            # Unserved Customers Warning
+            if unserved_list:
+                unserved_ids = [str(u.get('id', 'Unknown')) for u in unserved_list]
+                st.error(f"⚠️ Unserved Customers Detected: {', '.join(unserved_ids)}")
 
             # MAP Visualization
             st.subheader("Route Map")
