@@ -109,37 +109,8 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
     num_small_trucks = services.get('num_small_trucks', 6)
     total_fleet_size = num_small_trucks + num_big_trucks
 
-    # --- Advanced Solver Controls ---
-    with st.sidebar.expander("Advanced Optimization"):
-        solver_time_limit_minutes = st.number_input(
-            "Solver Time Limit (Minutes)",
-            min_value=1,
-            value=3,
-            help="Maximum time the solver will run. Longer times may yield better solutions for complex problems."
-        )
-        first_solution_strategy = st.selectbox(
-            "Optimization Strategy",
-            options=["Global Best", "Constraint Focused"],
-            index=0,
-            help="Strategy for finding the initial solution. 'Constraint Focused' prioritizes constraints, 'Global Best' seeks globally optimal arcs."
-        )
-        target_failure_rate = st.slider(
-            "Allowed Failure Rate (%)",
-            min_value=0.0,
-            max_value=10.0,
-            value=Config.DEFAULT_TARGET_FAILURE_RATE,
-            step=0.1,
-            help="Maximum acceptable failure rate for routes (volume/time constraints exceeded)."
-        )
-    
-    # Convert minutes to seconds for the solver
-    solver_time_limit_seconds = solver_time_limit_minutes * 60
-
     if st.button("Run Optimization", type="primary"):
         try:
-            # Initialize solution variable
-            best_solution = None
-
             wh_coords = None
             manual_warehouse_address = services.get('warehouse_address')
 
@@ -164,39 +135,35 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             st.session_state.warehouse_coords = wh_coords
 
-            with st.status("Running Optimization with Route Merging...", expanded=True) as status:
-                # Phase 1: Build Master Routes (Initial Clustering)
-                status.write("**Phase 1: Building Master Routes (Initial Clustering)**")
-
-                # Preparation Phase
+            with st.spinner("calculating optimization..."):
                 matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
                 demands = [0] + estimated_demand.tolist()
 
-                # Use strict capacity limits (1x, no Pressure Cooker buffer)
-                opt_small_capacity = small_capacity
-                opt_big_capacity = big_capacity
+                # Retrieve tolerances from fleet settings
+                volume_tolerance = services['fleet_settings'].get('volume_tolerance', 0.0)
+                time_tolerance = services['fleet_settings'].get('time_tolerance', 0.0)
 
-                # Use exact shift time (no tolerance buffers)
+                # Calculate boosted capacities (apply volume tolerance)
+                opt_small_capacity = int(small_capacity * (1 + volume_tolerance))
+                opt_big_capacity = int(big_capacity * (1 + volume_tolerance))
+
+                # Calculate boosted time (apply time tolerance)
                 base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
-                opt_shift_seconds = base_shift_seconds
+                opt_shift_seconds = int(base_shift_seconds * (1 + time_tolerance))
 
-                logger.info("Optimizing with strict physical limits for master routes")
+                logger.info(f"Optimizing with tolerances: Vol+{volume_tolerance:.1%}, Time+{time_tolerance:.1%}")
 
                 params = {
                     'fleet_size': total_fleet_size,
                     'num_small_trucks': num_small_trucks,
                     'num_big_trucks': num_big_trucks,
-                    'small_capacity': opt_small_capacity,      # Strict physical capacity (1x)
-                    'big_capacity': opt_big_capacity,          # Strict physical capacity (1x)
-                    'max_shift_seconds': opt_shift_seconds,    # Strict physical time limit
-                    'service_time_seconds': services['service_time_minutes'] * 60,
-                    # Advanced solver controls
-                    'time_limit_seconds': solver_time_limit_seconds,
-                    'first_solution_strategy': first_solution_strategy,
-                    'target_failure_rate': target_failure_rate
+                    'small_capacity': opt_small_capacity,      # Use boosted capacity
+                    'big_capacity': opt_big_capacity,          # Use boosted capacity
+                    'max_shift_seconds': opt_shift_seconds,    # Use boosted time
+                    'service_time_seconds': services['service_time_minutes'] * 60
                 }
 
-                # Solver Phase - Create master routes
+                # CALL OPTIMIZER
                 solution = services['route_optimizer'].solve(
                     [f"Loc {i}" for i in range(len(matrix_coords))],
                     demands,
@@ -204,113 +171,73 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     coords=matrix_coords
                 )
 
-                # Safety Guard: Check if solver found a solution
-                if solution is not None and solution.get('solution_found', False):
-                    best_solution = solution
-                    status.write(f"Master routes created: {len(solution['routes'])} routes")
+                st.session_state.solution = solution
 
-                # Phase 2: Historical Simulation with Route Merging
-                sim_results = None
-                if solution['solution_found']:
-                    status.write("**Phase 2: Daily Simulation with Route Merging**")
-                    
-                    # Store matrices and node map for historical simulation
-                    if 'matrix_data' in solution:
-                        matrix_data = solution['matrix_data']
-                        st.session_state.distance_matrix = matrix_data['distances']
-                        st.session_state.time_matrix = matrix_data['durations']
-                    else:
-                        logger.warning("Matrix data not found in solution, fetching from API")
-                        matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
-                        st.session_state.distance_matrix = matrix_data['distances']
-                        st.session_state.time_matrix = matrix_data['durations']
-
-                    st.session_state.node_map = create_node_map(valid_coords)
-                    st.session_state.optimization_params = params
-                    st.session_state.valid_coords_for_simulation = valid_coords
-
-                    # Run simulation with route merging enabled
-                    try:
-                        # Build route capacities list based on vehicle type
-                        route_metrics = solution.get('route_metrics', [])
-                        route_capacities = []
-                        small_truck_vol = services['fleet_settings']['small_truck_vol']
-                        big_truck_vol = services['fleet_settings']['big_truck_vol']
-                        for idx in range(len(solution['routes'])):
-                            if idx < len(route_metrics):
-                                vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
-                                if vehicle_type == 'Small':
-                                    route_capacities.append(small_truck_vol)
-                                else:
-                                    route_capacities.append(big_truck_vol)
-                            else:
-                                route_capacities.append(big_truck_vol)
-
-                        # Run simulation WITH route merging enabled
-                        sim_results = run_historical_simulation(
-                            historical_data=st.session_state.raw_data,
-                            master_routes=solution['routes'],
-                            distance_matrix=st.session_state.distance_matrix,
-                            time_matrix=st.session_state.time_matrix,
-                            node_map=st.session_state.node_map,
-                            service_time_seconds=params['service_time_seconds'],
-                            date_col='תאריך אספקה',
-                            customer_id_col="מס' לקוח",
-                            quantity_col='total_volume_m3',
-                            route_capacities=route_capacities,
-                            max_shift_seconds=params.get('max_shift_seconds'),
-                            enable_merging=Config.ENABLE_ROUTE_MERGING  # Route merging for daily optimization
-                        )
-                        
-                        status.write(f"Simulation complete: {len(sim_results)} days processed")
-                        
-                    except Exception as e:
-                        logger.error(f"Simulation failed: {e}")
-                        sim_results = None
-
-                # Calculate success rate
-                if sim_results is not None and not sim_results.empty:
-                    total_days = len(sim_results)
-                    failed_days_count = 0
-
-                    for _, day_row in sim_results.iterrows():
-                        routes = day_row.get('Route_Breakdown', [])
-                        if any(not r.get('success', True) for r in routes):
-                            failed_days_count += 1
-
-                    success_rate = ((total_days - failed_days_count) / total_days * 100) if total_days > 0 else 0.0
-                    
-                    # Calculate merge statistics
-                    avg_routes_before = sim_results['Routes_Before_Merge'].mean()
-                    avg_routes_after = sim_results['Routes_After_Merge'].mean()
-                    merge_reduction = (1 - avg_routes_after / avg_routes_before) * 100 if avg_routes_before > 0 else 0
-                    
-                    status.write(f"Success Rate: {success_rate:.1f}%")
-                    status.write(f"Route Merging: Avg {avg_routes_before:.1f} -> {avg_routes_after:.1f} trucks ({merge_reduction:.1f}% reduction)")
-                    
-                    status.update(label="Optimization Complete!", state="complete", expanded=False)
-                    st.toast("Optimization with route merging complete!")
+                # Store matrices and node map for historical simulation
+                # Reuse matrix data from solution to avoid duplicate API calls
+                if 'matrix_data' in solution:
+                    # Use matrix data already fetched during optimization
+                    matrix_data = solution['matrix_data']
+                    st.session_state.distance_matrix = matrix_data['distances']
+                    st.session_state.time_matrix = matrix_data['durations']
                 else:
-                    status.update(label="Simulation failed", state="error", expanded=False)
+                    # Fallback: fetch if not in solution (shouldn't happen, but defensive)
+                    logger.warning("Matrix data not found in solution, fetching from API")
+                    matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
+                    st.session_state.distance_matrix = matrix_data['distances']
+                    st.session_state.time_matrix = matrix_data['durations']
+                st.session_state.node_map = create_node_map(valid_coords)
+                st.session_state.optimization_params = params
+                st.session_state.valid_coords_for_simulation = valid_coords
+
+                if solution['solution_found']:
                     
-                if not solution['solution_found']:
-                    st.error("Solver failed to find a feasible solution. Try increasing fleet size or Time Limits.")
-                    best_solution = None
-
-            # Final Persistence: Ensure results are properly stored and UI refreshes
-            if best_solution is not None:
-                # 1. Persist the Best Result to State
-                st.session_state.solution = best_solution
-                st.session_state.simulation_results = sim_results
-
-                # 2. Persist other necessary context if needed
-                # st.session_state.distance_matrix = ... (if changed)
-
-                # 3. Success Message
-                st.toast("Optimization cycle complete. Updating UI...")
-
-                # 4. Force UI Refresh
-                st.rerun()
+                    
+                    # Automatic Simulation: Run historical simulation immediately after optimization
+                    required_session_keys = ['raw_data', 'distance_matrix', 'time_matrix', 'node_map']
+                    missing_keys = [key for key in required_session_keys if not hasattr(st.session_state, key) or getattr(st.session_state, key) is None]
+                    
+                    if not missing_keys:
+                        try:
+                            with st.spinner("Running historical simulation..."):
+                                # Build route capacities list based on vehicle type
+                                route_metrics = solution.get('route_metrics', [])
+                                route_capacities = []
+                                small_truck_vol = services['fleet_settings']['small_truck_vol']
+                                big_truck_vol = services['fleet_settings']['big_truck_vol']
+                                for idx in range(len(solution['routes'])):
+                                    if idx < len(route_metrics):
+                                        vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
+                                        if vehicle_type == 'Small':
+                                            route_capacities.append(small_truck_vol)
+                                        else:
+                                            route_capacities.append(big_truck_vol)
+                                    else:
+                                        # Default to big truck if unknown
+                                        route_capacities.append(big_truck_vol)
+                                
+                                sim_results = run_historical_simulation(
+                                    historical_data=st.session_state.raw_data,
+                                    master_routes=solution['routes'],
+                                    distance_matrix=st.session_state.distance_matrix,
+                                    time_matrix=st.session_state.time_matrix,
+                                    node_map=st.session_state.node_map,
+                                    service_time_seconds=params['service_time_seconds'],
+                                    date_col='תאריך אספקה',
+                                    customer_id_col="מס' לקוח",
+                                    quantity_col='total_volume_m3',
+                                    route_capacities=route_capacities,
+                                    max_shift_seconds=params.get('max_shift_seconds'),
+                                    volume_tolerance=services['fleet_settings'].get('volume_tolerance', 0.0),
+                                    time_tolerance=services['fleet_settings'].get('time_tolerance', 0.0)
+                                )
+                                st.session_state.simulation_results = sim_results
+                        except Exception as e:
+                            logger.error(f"Simulation failed: {e}")
+                            st.warning(f"Routes generated successfully, but historical simulation failed. Error: {str(e)}")
+                            st.session_state.simulation_results = None
+                else:
+                    st.error("Optimization failed.")
 
         except DataValidationError as e:
             st.error(f"Data validation error: {str(e)}")
@@ -353,86 +280,121 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             )
             st.components.v1.html(phase2_map._repr_html_(), height=700)
 
-            # Aggregate Summary Statistics
-            st.subheader("Optimization Results - Aggregate Summary")
+            # Expandable Route Details
+            st.subheader("Route Details")
 
+            # Retrieve volume limits from fleet settings
+            small_truck_vol = services['fleet_settings']['small_truck_vol']
+            big_truck_vol = services['fleet_settings']['big_truck_vol']
+
+            route_metrics = solution.get('route_metrics', [])
+
+            # Routes per Day view (default)
             # Check if simulation results exist and are not empty
             if st.session_state.get('simulation_results') is not None and not st.session_state.simulation_results.empty:
                 sim_results = st.session_state.simulation_results
                 
-                # Calculate aggregate statistics
-                total_days = len(sim_results)
-                
-                # Truck usage statistics (with merging)
-                avg_trucks_used = sim_results['Routes_After_Merge'].mean() if 'Routes_After_Merge' in sim_results.columns else sim_results['Active_Routes'].mean()
-                max_trucks_used = sim_results['Routes_After_Merge'].max() if 'Routes_After_Merge' in sim_results.columns else sim_results['Active_Routes'].max()
-                min_trucks_used = sim_results['Routes_After_Merge'].min() if 'Routes_After_Merge' in sim_results.columns else sim_results['Active_Routes'].min()
-                
-                # Merge reduction statistics
-                if 'Routes_Before_Merge' in sim_results.columns and 'Routes_After_Merge' in sim_results.columns:
-                    avg_before_merge = sim_results['Routes_Before_Merge'].mean()
-                    avg_after_merge = sim_results['Routes_After_Merge'].mean()
-                    merge_reduction_pct = (1 - avg_after_merge / avg_before_merge) * 100 if avg_before_merge > 0 else 0
-                else:
-                    avg_before_merge = avg_trucks_used
-                    avg_after_merge = avg_trucks_used
-                    merge_reduction_pct = 0
-                
-                # Distance and time statistics
-                avg_daily_distance = sim_results['Total_Distance_km'].mean()
-                total_distance = sim_results['Total_Distance_km'].sum()
-                avg_daily_time = sim_results['Daily_Total_Duration'].mean() / 3600.0  # Convert to hours
-                max_shift_time = sim_results['Max_Shift_Duration_hours'].mean()
-                
-                # Volume and utilization statistics
-                total_load = sim_results['Daily_Total_Load'].sum()
-                total_capacity = sim_results['Daily_Total_Capacity'].sum()
-                avg_volume_utilization = (total_load / total_capacity * 100) if total_capacity > 0 else 0
-                
-                # Success rate calculation
-                failed_days = 0
-                for _, day_row in sim_results.iterrows():
-                    routes = day_row.get('Route_Breakdown', [])
-                    if any(not r.get('success', True) for r in routes):
-                        failed_days += 1
-                success_rate = ((total_days - failed_days) / total_days * 100) if total_days > 0 else 0
-                
-                # Customer statistics
-                avg_customers = sim_results['Active_Customers'].mean()
-                avg_stops = sim_results['Total_Stops'].mean()
-                
-                # Display aggregate metrics in a clean layout
-                st.markdown("### Fleet Efficiency")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Avg Trucks/Day", f"{avg_trucks_used:.1f}", 
-                           delta=f"-{merge_reduction_pct:.0f}% from merging" if merge_reduction_pct > 0 else None,
-                           delta_color="normal")
-                col2.metric("Truck Range", f"{min_trucks_used:.0f} - {max_trucks_used:.0f}")
-                col3.metric("Success Rate", f"{success_rate:.1f}%")
-                col4.metric("Days Simulated", f"{total_days}")
-                
-                st.markdown("### Distance & Time")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Avg Daily Distance", f"{avg_daily_distance:.1f} km")
-                col2.metric("Total Distance", f"{total_distance:.0f} km")
-                col3.metric("Avg Daily Hours", f"{avg_daily_time:.1f} h")
-                col4.metric("Avg Max Shift", f"{max_shift_time:.1f} h")
-                
-                st.markdown("### Volume & Utilization")
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("Avg Volume Utilization", f"{avg_volume_utilization:.1f}%")
-                col2.metric("Avg Customers/Day", f"{avg_customers:.1f}")
-                col3.metric("Avg Stops/Day", f"{avg_stops:.1f}")
-                col4.metric("Total Volume Delivered", f"{total_load:.0f} m³")
-                
-                # Route Merging Summary
-                if merge_reduction_pct > 0:
-                    st.markdown("### Route Merging Summary")
-                    st.info(f"Route merging reduced truck usage from avg **{avg_before_merge:.1f}** to **{avg_after_merge:.1f}** trucks per day (**{merge_reduction_pct:.1f}%** reduction)")
-                
+                # Retrieve Safety Factor
+                safety_factor = services['fleet_settings']['safety_factor']
+
+                # Data transformation: Pivot from date-centric to route-centric
+                route_stats = {}
+
+                # Initialize stats dictionary for each route
+                for idx in range(len(solution['routes'])):
+                    route_stats[idx] = []
+
+                # Process each simulation day
+                for _, row in sim_results.iterrows():
+                    date = row['Date']
+                    route_breakdown = row.get('Route_Breakdown', [])
+
+                    # Store daily metrics for each route
+                    for route_data in route_breakdown:
+                        route_id = route_data['route_id']
+                        if route_id in route_stats:
+                            route_stats[route_id].append({
+                                'Date': date,
+                                'Stops': route_data['num_stops'],
+                                'Volume': route_data['total_load'],
+                                'Distance (km)': route_data['distance_meters'] / 1000,  # Convert to km
+                                'Time (h)': route_data['duration_seconds'] / 3600,     # Convert to hours
+                                'success': route_data.get('success', True),  # Include success status
+                                'status': route_data.get('status', 'OK')     # Include status string
+                            })
+
+                # Calculate total simulation days
+                total_sim_days = len(sim_results)
+
+                # UI Rendering: Per Route Expanders
+                for idx, route in enumerate(solution['routes']):
+                    if len(route) <= 2:  # Skip empty routes
+                        continue
+
+                    route_daily_data = route_stats.get(idx, [])
+
+                    if not route_daily_data:
+                        continue
+
+                    # Calculate success rate statistics
+                    total_days_driven = len(route_daily_data)
+                    success_days = sum(1 for day in route_daily_data if day.get('success', True))
+                    success_rate = (success_days / total_days_driven * 100) if total_days_driven > 0 else 0.0
+
+                    # Calculate averages for this route
+                    avg_stops = np.mean([day['Stops'] for day in route_daily_data])
+                    avg_volume = np.mean([day['Volume'] for day in route_daily_data]) / safety_factor
+                    avg_distance = np.mean([day['Distance (km)'] for day in route_daily_data])
+                    avg_time = np.mean([day['Time (h)'] for day in route_daily_data])
+
+                    # Count days this route was driven
+                    days_driven = len(route_daily_data)
+
+                    # Choose emoji based on success rate
+                    success_emoji = "✅" if success_rate >= 95.0 else "⚠️"
+
+                    # Expander header with success rate, averages and days driven
+                    header = f"Route {idx+1}: {success_emoji} {success_rate:.1f}% Success | Avg {avg_stops:.1f} stops | Avg Vol: {avg_volume:.1f} | Avg Dist: {avg_distance:.1f} km | Avg Time: {avg_time:.1f} h | Driven: {days_driven}/{total_sim_days} days"
+
+                    with st.expander(header):
+                        # Create DataFrame for daily stats
+                        daily_df = pd.DataFrame(route_daily_data)
+                        # Format Date column to clean string format
+                        if 'Date' in daily_df.columns:
+                            daily_df['Date'] = pd.to_datetime(daily_df['Date']).dt.strftime('%Y-%m-%d')
+                        # Ensure status column is included and formatted
+                        if 'status' in daily_df.columns:
+                            # Reorder columns to put status at the end for better visibility
+                            cols = [col for col in daily_df.columns if col != 'status'] + ['status']
+                            daily_df = daily_df[cols]
+                        st.dataframe(daily_df, use_container_width=True, hide_index=True)
+
+                # Footer: System-wide daily averages and totals
+                if not sim_results.empty:
+                    system_avg_distance = sim_results['Total_Distance_km'].mean()
+                    system_avg_time = sim_results['Daily_Total_Duration'].mean() / 3600.0  # Convert seconds to hours
+                    avg_stops_daily = sim_results['Total_Stops'].mean()
+                    
+                    # Calculate total volume usage
+                    total_load_sum = sim_results['Daily_Total_Load'].sum()
+                    total_capacity_sum = sim_results['Daily_Total_Capacity'].sum()
+                    total_volume_usage = (total_load_sum / total_capacity_sum * 100) if total_capacity_sum > 0 else 0.0
+
+                    # Calculate grand totals for the entire simulation period
+                    total_distance_all_days = sim_results['Total_Distance_km'].sum()
+                    total_time_all_days = sim_results['Max_Shift_Duration_hours'].sum()
+
+                    st.markdown("---")
+                    col1, col2, col3, col4, col5, col6 = st.columns(6)
+                    col1.metric("System Avg Daily Distance", f"{system_avg_distance:.1f} km")
+                    col2.metric("Total Daily Distance", f"{total_distance_all_days:.1f} km")
+                    col3.metric("Avg Daily Man-Hours", f"{system_avg_time:.1f} h")
+                    col4.metric("Total Daily Time", f"{total_time_all_days:.1f} hours")
+                    col5.metric("Avg Daily Stops", f"{avg_stops_daily:.1f}")
+                    col6.metric("Total Volume Usage", f"{total_volume_usage:.1f}%")
             else:
                 # Edge case: simulation results not available
-                st.info("Simulation statistics are unavailable. Please run optimization to see aggregate results.")
+                st.info("Daily simulation statistics are unavailable. Please check the 'Static Routes' tab for route details.")
 
         else:
             st.error("Optimization failed.")

@@ -21,7 +21,7 @@ class DataManager:
         """Initialize DataManager with default configuration."""
         self.expected_columns = Config.EXPECTED_HEBREW_COLUMNS
 
-    def _calculate_client_force(self, daily_values, total_days: int, buffer: float) -> Tuple[float, float]:
+    def _calculate_client_force(self, daily_values, total_days: int, buffer: float) -> float:
         """
         Calculate Client Force using industry standard formula:
             force = mean + (std * buffer)
@@ -35,7 +35,7 @@ class DataManager:
             buffer: Multiplier applied to standard deviation.
 
         Returns:
-            Tuple of (force_value, std_deviation) as floats.
+            Calculated force value as float.
         """
         try:
             total_days = int(total_days)
@@ -60,8 +60,7 @@ class DataManager:
 
         mean = float(np.mean(full_values))
         std = float(np.std(full_values, ddof=1))
-        force = mean + (std * float(buffer))
-        return force, std
+        return mean + (std * float(buffer))
 
     def _normalize_name(self, name: str) -> str:
         """
@@ -415,17 +414,15 @@ class DataManager:
             logger.error(f"Error aggregating data: {e}")
             raise ValueError(f"שגיאה באגרגציה של הנתונים: {str(e)}")
     
-    def recalculate_customer_force(self, aggregated_df: pd.DataFrame, raw_df: pd.DataFrame, buffer: float = None, buffer_multipliers: Optional[Dict[Any, float]] = None) -> pd.DataFrame:
+    def recalculate_customer_force(self, aggregated_df: pd.DataFrame, raw_df: pd.DataFrame, buffer: float) -> pd.DataFrame:
         """
-        Recalculate Customer Force metrics based on buffer multipliers.
-
+        Recalculate Customer Force metrics based on a buffer value.
+        
         Args:
             aggregated_df: The aggregated customer dataframe (with existing force metrics)
             raw_df: The raw delivery data (before aggregation)
-            buffer: Legacy single buffer value (deprecated, use buffer_multipliers)
-            buffer_multipliers: Optional dict mapping customer IDs to specific buffer multipliers.
-                               If not provided, uses Config.INITIAL_BUFFER_MULTIPLIER for all customers.
-
+            buffer: The standard deviation buffer (float) to use for force calculation
+            
         Returns:
             Updated aggregated dataframe with new force metrics
         """
@@ -455,45 +452,20 @@ class DataManager:
             # Step 2: Calculate New Force (mean + std*buffer) including zero-days
             def calc_force_metrics(group):
                 """Calculate force metrics for a customer group."""
-                # Get customer ID from the group index (since we group by 'מס' לקוח')
-                customer_id = group.name
-
-                # Determine buffer multiplier for this customer
-                if buffer_multipliers is not None and customer_id in buffer_multipliers:
-                    customer_buffer = buffer_multipliers[customer_id]
-                else:
-                    customer_buffer = Config.INITIAL_BUFFER_MULTIPLIER
-
-                # For backward compatibility, if buffer is provided, use it as fallback
-                if buffer is not None and customer_buffer == Config.INITIAL_BUFFER_MULTIPLIER:
-                    customer_buffer = buffer
-
-                # Calculate force and standard deviation for quantity
-                force_quantity, std_quantity = self._calculate_client_force(group['כמות'].values, total_days, customer_buffer)
-
                 result = {
-                    'force_quantity': force_quantity,
-                    'std_quantity': std_quantity
+                    'force_quantity': self._calculate_client_force(group['כמות'].values, total_days, buffer)
                 }
-
+                
                 if 'total_volume_m3' in group.columns:
-                    force_volume, std_volume = self._calculate_client_force(group['total_volume_m3'].values, total_days, customer_buffer)
-                    result['force_volume'] = force_volume
-                    result['std_volume'] = std_volume
+                    result['force_volume'] = self._calculate_client_force(group['total_volume_m3'].values, total_days, buffer)
                 else:
                     result['force_volume'] = 0.0
-                    result['std_volume'] = 0.0
-
+                
                 return pd.Series(result)
             
             force_metrics = daily_orders.groupby('מס\' לקוח').apply(calc_force_metrics, include_groups=False).reset_index()
             
-            if buffer_multipliers:
-                unique_multipliers = set(buffer_multipliers.values())
-                logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using {len(unique_multipliers)} unique buffer multipliers over total_days={total_days}")
-            else:
-                default_buffer = Config.INITIAL_BUFFER_MULTIPLIER
-                logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using default buffer={default_buffer} over total_days={total_days}")
+            logger.info(f"Recalculated force metrics for {len(force_metrics)} customers using buffer={buffer} over total_days={total_days}")
             
             # Step 3: Merge new force metrics into aggregated dataframe
             # Create a copy to avoid modifying the original
@@ -504,33 +476,23 @@ class DataManager:
                 updated_df = updated_df.drop(columns=['force_quantity'])
             if 'force_volume' in updated_df.columns:
                 updated_df = updated_df.drop(columns=['force_volume'])
-            if 'std_quantity' in updated_df.columns:
-                updated_df = updated_df.drop(columns=['std_quantity'])
-            if 'std_volume' in updated_df.columns:
-                updated_df = updated_df.drop(columns=['std_volume'])
-
+            
             # Merge on customer ID
-            merge_cols = ['מס\' לקוח', 'force_quantity', 'force_volume', 'std_quantity', 'std_volume']
+            merge_cols = ['מס\' לקוח', 'force_quantity', 'force_volume']
             updated_df = updated_df.merge(
                 force_metrics[merge_cols],
                 on='מס\' לקוח',
                 how='left'
             )
-
+            
             # Fill missing force values (shouldn't happen, but defensive)
             updated_df['force_quantity'] = updated_df['force_quantity'].fillna(0)
             updated_df['force_volume'] = updated_df['force_volume'].fillna(0)
-            updated_df['std_quantity'] = updated_df['std_quantity'].fillna(0)
-            updated_df['std_volume'] = updated_df['std_volume'].fillna(0)
             
             # Overwrite avg_quantity with the new force_quantity
             updated_df['avg_quantity'] = updated_df['force_quantity']
             
-            if buffer_multipliers:
-                logger.info(f"Updated customer force metrics with {len(buffer_multipliers)} custom buffer multipliers")
-            else:
-                default_buffer = Config.INITIAL_BUFFER_MULTIPLIER
-                logger.info(f"Updated customer force metrics with default buffer={default_buffer}")
+            logger.info(f"Updated customer force metrics with buffer={buffer}")
             return updated_df
             
         except Exception as e:

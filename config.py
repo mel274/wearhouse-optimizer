@@ -29,19 +29,6 @@ class Config:
     CANDIDATE_PERCENTAGE = 0.3
     MIN_K_START = 1
     
-    # Solver controls (OR-Tools)
-    SOLVER_TIME_LIMIT_SECONDS = 180  # Default: 3 minutes
-    FIRST_SOLUTION_STRATEGY = 'Global Best'  # Default strategy
-
-    # Iterative Risk-Managed Engine parameters (legacy)
-    MAX_OPTIMIZATION_ITERATIONS = 5
-    DEFAULT_TARGET_FAILURE_RATE = 1.0  # Represents 1% allowed failure rate
-    INITIAL_BUFFER_MULTIPLIER = 1.0
-    
-    # Route Merging Optimization
-    # When enabled, daily simulation will merge underutilized routes to maximize truck efficiency
-    ENABLE_ROUTE_MERGING = True  # Set to False to disable route merging
-    
     # Geographic and visualization parameters
     ISRAEL_LAT_MIN = 29.0
     ISRAEL_LAT_MAX = 34.0
@@ -68,9 +55,10 @@ class Config:
 
     # --- OPTIMIZATION COSTS ---
     # Strict priority hierarchy enforcement:
-    # Stage 1 (Highest): Minimize the number of trucks (Cost: 1,000,000 per truck)
-    # Stage 2 (Middle): Balance load across trucks (Cost: 10 per unit imbalance)
+    # Stage 1 (Highest): Serve ALL customers (Penalty: 10,000,000)
+    # Stage 2 (Middle): Minimize the number of trucks (Cost: 1,000,000 per truck)
     # Stage 3 (Lowest): Minimize total kilometers (Cost: 1 per meter)
+    UNSERVED_PENALTY = 10000000  # Penalty for not serving a customer
     VEHICLE_FIXED_COST = 1000000  # Fixed cost per vehicle used
     
     # Customer Force (Percentile-based demand planning)
