@@ -33,10 +33,14 @@ class Config:
     SOLVER_TIME_LIMIT_SECONDS = 180  # Default: 3 minutes
     FIRST_SOLUTION_STRATEGY = 'Global Best'  # Default strategy
 
-    # Iterative Risk-Managed Engine parameters
+    # Iterative Risk-Managed Engine parameters (legacy)
     MAX_OPTIMIZATION_ITERATIONS = 5
     DEFAULT_TARGET_FAILURE_RATE = 1.0  # Represents 1% allowed failure rate
     INITIAL_BUFFER_MULTIPLIER = 1.0
+    
+    # Route Merging Optimization
+    # When enabled, daily simulation will merge underutilized routes to maximize truck efficiency
+    ENABLE_ROUTE_MERGING = True  # Set to False to disable route merging
     
     # Geographic and visualization parameters
     ISRAEL_LAT_MIN = 29.0
