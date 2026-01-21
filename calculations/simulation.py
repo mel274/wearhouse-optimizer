@@ -144,8 +144,6 @@ def _process_single_date(
     depot: int,
     route_capacities: List[float],
     max_shift_seconds: int,
-    volume_tolerance: float,
-    time_tolerance: float,
     customer_id_col: str,
     quantity_col: str
 ) -> Dict[str, Any]:
@@ -164,8 +162,6 @@ def _process_single_date(
         depot: Matrix index of depot
         route_capacities: List of volume limits for each master route
         max_shift_seconds: Global shift duration limit in seconds
-        volume_tolerance: Percentage tolerance for volume overload
-        time_tolerance: Percentage tolerance for time overage
         customer_id_col: Column name containing customer IDs
         quantity_col: Column name containing quantity/volume data
         
@@ -230,13 +226,13 @@ def _process_single_date(
             # Add total load to daily total
             daily_total_load += total_load
 
-            # Determine limits with tolerance
+            # Determine limits
             limit_vol = None
             limit_time = None
             if route_capacities is not None and route_idx < len(route_capacities):
-                limit_vol = route_capacities[route_idx] * (1 + volume_tolerance)
+                limit_vol = route_capacities[route_idx]
             if max_shift_seconds is not None:
-                limit_time = max_shift_seconds * (1 + time_tolerance)
+                limit_time = max_shift_seconds
             
             # Add capacity to daily total if limit exists
             if limit_vol is not None:
@@ -315,9 +311,7 @@ def run_historical_simulation(
     quantity_col: str = 'כמות',
     depot: int = 0,
     route_capacities: List[float] = None,
-    max_shift_seconds: int = None,
-    volume_tolerance: float = 0.0,
-    time_tolerance: float = 0.0
+    max_shift_seconds: int = None
 ) -> pd.DataFrame:
     """
     Run backtesting simulation on historical data.
@@ -335,8 +329,6 @@ def run_historical_simulation(
         depot: Matrix index of depot (usually 0)
         route_capacities: Optional list of volume limits for each master route
         max_shift_seconds: Optional global shift duration limit in seconds
-        volume_tolerance: Percentage tolerance for volume overload (e.g., 0.05 for 5%)
-        time_tolerance: Percentage tolerance for time overage (e.g., 0.05 for 5%)
 
     Returns:
         DataFrame with daily metrics: Date, Total_Distance_km, Max_Shift_Duration_hours,
@@ -378,8 +370,6 @@ def run_historical_simulation(
                 depot=depot,
                 route_capacities=route_capacities,
                 max_shift_seconds=max_shift_seconds,
-                volume_tolerance=volume_tolerance,
-                time_tolerance=time_tolerance,
                 customer_id_col=customer_id_col,
                 quantity_col=quantity_col
             ))
