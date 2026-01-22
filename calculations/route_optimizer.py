@@ -227,7 +227,7 @@ class RouteOptimizer:
         # Add soft upper bounds for time (elastic constraints)
         for vehicle_id in range(data['num_vehicles']):
             index = routing.End(vehicle_id)
-            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 100000)
+            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 10_000_000)
 
         # Get the Time dimension and set global span cost to balance workloads across drivers
         time_dim = routing.GetDimensionOrDie("Time")
@@ -273,7 +273,7 @@ class RouteOptimizer:
         for vehicle_id in range(data['num_vehicles']):
             index = routing.End(vehicle_id)
             original_vehicle_capacity = data['vehicle_capacities'][vehicle_id]
-            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 100000)
+            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 10_000_000)
         
         # Add disjunctions (penalties for unassigned nodes)
         penalty_value = Config.UNSERVED_PENALTY  # Penalty for not serving customers
@@ -297,9 +297,9 @@ class RouteOptimizer:
             routing_enums_pb2.FirstSolutionStrategy.PATH_MOST_CONSTRAINED_ARC
         )
         search_parameters.local_search_metaheuristic = (
-            routing_enums_pb2.LocalSearchMetaheuristic.TABU_SEARCH
+            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 60  # 60 second time limit for aggressive solving
+        search_parameters.time_limit.seconds = 600  # 600 second time limit for GLS optimization
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")
