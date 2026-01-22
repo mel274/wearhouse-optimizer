@@ -54,12 +54,12 @@ class Config:
     }
 
     # --- OPTIMIZATION COSTS ---
-    # Strict priority hierarchy enforcement:
-    # Stage 1 (Highest): Serve ALL customers (Penalty: 100,000,000,000)
-    # Stage 2 (Middle): Never overload if new truck can be spawned (Penalty: 10,000,000)
-    # Stage 3 (Lowest): Minimize the number of trucks (Cost: 1,000,000 per truck)
+    # Hardcoded Standards - No Drops, Max Fill:
+    # Stage 1 (Highest): Serve ALL customers (MANDATORY - no disjunctions)
+    # Stage 2 (Middle): Pack vehicles tightly with PATH_CHEAPEST_ARC
+    # Stage 3 (Lowest): Minimize fleet size aggressively (Cost: 2,000,000 per truck)
     UNSERVED_PENALTY = 100_000_000_000  # Penalty for not serving a customer (100B)
-    VEHICLE_FIXED_COST = 1_000_000  # Fixed cost per vehicle used (1M)
+    VEHICLE_FIXED_COST = 2_000_000  # Fixed cost per vehicle used (2M) - forces minimum fleet
     
     # Customer Force (Percentile-based demand planning)
     # Deprecated: percentile-based Customer Force (kept for backward compatibility).

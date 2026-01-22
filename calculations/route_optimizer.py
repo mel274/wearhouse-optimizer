@@ -227,7 +227,7 @@ class RouteOptimizer:
         # Add soft upper bounds for time (elastic constraints)
         for vehicle_id in range(data['num_vehicles']):
             index = routing.End(vehicle_id)
-            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 10_000_000)
+            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 100_000)
 
         # Get the Time dimension and set global span cost to balance workloads across drivers
         time_dim = routing.GetDimensionOrDie("Time")
@@ -273,12 +273,7 @@ class RouteOptimizer:
         for vehicle_id in range(data['num_vehicles']):
             index = routing.End(vehicle_id)
             original_vehicle_capacity = data['vehicle_capacities'][vehicle_id]
-            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 10_000_000)
-        
-        # Add disjunctions (penalties for unassigned nodes)
-        penalty_value = Config.UNSERVED_PENALTY  # Penalty for not serving customers
-        for node in range(1, num_nodes):  # Skip depot (node 0)
-            routing.AddDisjunction([manager.NodeToIndex(node)], penalty_value)
+            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 100_000)
         
         # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
         gush_dan_node_indices = data.get('gush_dan_node_indices', set())
@@ -294,12 +289,12 @@ class RouteOptimizer:
         # Set search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_MOST_CONSTRAINED_ARC
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
         )
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 600  # 600 second time limit for GLS optimization
+        search_parameters.time_limit.seconds = 300  # 300 second time limit for greedy packing
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")
