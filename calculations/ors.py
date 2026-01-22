@@ -16,6 +16,9 @@ from config import Config
 logger = logging.getLogger(__name__)
 
 class ORSHandler:
+    # Maximum waypoints per directions request to avoid HTTP 400 errors
+    MAX_WAYPOINTS_PER_REQUEST = 40
+
     def __init__(self, api_key: str, connect_timeout: int = Config.ORS_CONNECT_TIMEOUT,
                  read_timeout: int = Config.ORS_READ_TIMEOUT, max_retries: int = Config.ORS_MAX_RETRIES):
         """
@@ -26,10 +29,22 @@ class ORSHandler:
         self.read_timeout = read_timeout
         self.timeout = (connect_timeout, read_timeout)
         self.max_retries = max_retries
-        
+
+        # Hybrid architecture: Matrix operations use local Docker, Directions use cloud API
+        if hasattr(Config, 'ORS_BASE_URL') and Config.ORS_BASE_URL:
+            self.matrix_url = Config.ORS_BASE_URL.rstrip('/')  # Local Docker for Matrix operations
+            logger.info(f"Matrix operations using local Docker ORS instance: {self.matrix_url}")
+        else:
+            self.matrix_url = "https://api.openrouteservice.org"
+            logger.warning("No local Docker configured - Matrix operations will use cloud API")
+
+        # Directions always use cloud API for better geometry support
+        self.directions_url = "https://api.openrouteservice.org"
+        logger.info(f"Directions operations using cloud ORS API: {self.directions_url}")
+
         # Configure session with retry strategy
         self.session = self._create_session()
-        
+
         if not self.api_key:
             logger.warning("ORSHandler initialized without API Key.")
     
@@ -79,7 +94,7 @@ class ORSHandler:
             # ORS expects [lon, lat]
             formatted_locations = [[loc[1], loc[0]] for loc in locations]
             
-            url = "http://localhost:8080/ors/v2/matrix/driving-car"
+            url = f"{self.matrix_url}/matrix/driving-car"
             headers = {
                 'Authorization': self.api_key,
                 'Content-Type': 'application/json'
@@ -89,10 +104,11 @@ class ORSHandler:
                 "metrics": ["distance", "duration"]
             }
 
+            logger.info(f"Requesting matrix URL: {url}")
             response = self.session.post(
-                url, 
-                json=body, 
-                headers=headers, 
+                url,
+                json=body,
+                headers=headers,
                 timeout=timeout
             )
             response.raise_for_status()
@@ -121,7 +137,7 @@ class ORSHandler:
         distances_matrix = [[0.0] * num_locations for _ in range(num_locations)]
         
         # Loop through source chunks
-        url = "http://localhost:8080/ors/v2/matrix/driving-car"
+        url = f"{self.matrix_url}/matrix/driving-car"
         headers = {
             'Authorization': self.api_key,
             'Content-Type': 'application/json'
@@ -156,6 +172,7 @@ class ORSHandler:
                         "metrics": ["distance", "duration"]
                     }
                     
+                    logger.info(f"Requesting batched matrix URL: {url}")
                     response = self.session.post(
                         url,
                         json=body,
@@ -186,10 +203,73 @@ class ORSHandler:
             'distances': distances_matrix
         }
 
+    def _get_directions_single_request(self, route_coordinates: List[Coords]) -> Dict[str, Any]:
+        """
+        Make a single directions API request for a route segment.
+        Returns dict with 'geometry', 'distance', 'duration', or raises exception on failure.
+        """
+        # ORS expects [lon, lat]
+        formatted_coords = [[coord[1], coord[0]] for coord in route_coordinates]
+
+        url = f"{self.directions_url}/v2/directions/driving-car"
+        headers = {
+            'Authorization': self.api_key,
+            'Content-Type': 'application/json'
+        }
+        body = {
+            "coordinates": formatted_coords
+        }
+
+        logger.info(f"Requesting directions URL: {url} with {len(route_coordinates)} waypoints")
+        response = self.session.post(
+            url,
+            json=body,
+            headers=headers,
+            timeout=self.timeout
+        )
+
+        # Enhanced error handling: log response.text on non-200 status
+        if response.status_code != 200:
+            logger.error(f"ORS API returned status {response.status_code}: {response.text}")
+            response.raise_for_status()
+
+        data = response.json()
+
+        # Extract geometry from routes response
+        geometry = []
+        distance = 0.0
+        duration = 0.0
+
+        if 'routes' in data and len(data['routes']) > 0:
+            route = data['routes'][0]
+
+            # Extract geometry
+            if 'geometry' in route:
+                if isinstance(route['geometry'], str):
+                    # Polyline string - decode it
+                    geometry = decode_polyline(route['geometry']) or []
+                elif isinstance(route['geometry'], dict) and 'coordinates' in route['geometry']:
+                    # Coordinate array - convert [lon, lat] -> (lat, lon)
+                    geometry = [(coord[1], coord[0]) for coord in route['geometry']['coordinates']]
+
+            # Extract distance and duration from summary
+            if 'summary' in route:
+                summary = route['summary']
+                distance = summary.get('distance', 0.0)  # meters
+                duration = summary.get('duration', 0.0)  # seconds
+
+        return {
+            'geometry': geometry,
+            'distance': distance,
+            'duration': duration
+        }
+
     @retry_with_backoff(max_attempts=3)
-    def get_directions(self, route_coordinates: List[Coords]) -> Dict[str, Any]:
+    def get_directions(self, route_coordinates: List[Coords]) -> Optional[Dict[str, Any]]:
         """
         Fetch route geometry (polylines) and precise distance/duration from ORS Directions API.
+        Handles large routes by chunking them into smaller segments with overlapping waypoints.
+        Returns None on failure to allow fallback to matrix-based estimation.
         """
         if not self.api_key:
             raise ValueError("API Key is required for directions requests.")
@@ -197,60 +277,69 @@ class ORSHandler:
         if not route_coordinates or len(route_coordinates) < 2:
             raise ValueError("At least two coordinates are required for directions.")
 
-        logger.info(f"Fetching directions for route with {len(route_coordinates)} waypoints")
+        num_waypoints = len(route_coordinates)
+        logger.info(f"Fetching directions for route with {num_waypoints} waypoints")
 
         try:
-            # ORS expects [lon, lat]
-            formatted_coords = [[coord[1], coord[0]] for coord in route_coordinates]
+            # Check if chunking is required
+            if num_waypoints <= self.MAX_WAYPOINTS_PER_REQUEST:
+                # Single request for small routes
+                return self._get_directions_single_request(route_coordinates)
+            else:
+                # Chunking required for large routes
+                logger.info(f"Route exceeds {self.MAX_WAYPOINTS_PER_REQUEST} waypoints, using chunking approach")
 
-            url = "https://api.openrouteservice.org/v2/directions/driving-car/geojson"
-            headers = {
-                'Authorization': self.api_key,
-                'Content-Type': 'application/json'
-            }
-            body = {
-                "coordinates": formatted_coords
-            }
+                # Create overlapping chunks
+                chunks = []
+                for start_idx in range(0, num_waypoints - 1, self.MAX_WAYPOINTS_PER_REQUEST - 1):
+                    end_idx = min(start_idx + self.MAX_WAYPOINTS_PER_REQUEST, num_waypoints)
+                    chunk = route_coordinates[start_idx:end_idx]
+                    chunks.append(chunk)
 
-            response = self.session.post(
-                url,
-                json=body,
-                headers=headers,
-                timeout=self.timeout
-            )
-            response.raise_for_status()
+                logger.info(f"Created {len(chunks)} chunks for route segmentation")
 
-            data = response.json()
+                # Process each chunk and aggregate results
+                total_distance = 0.0
+                total_duration = 0.0
+                aggregated_geometry = []
 
-            # Extract geometry from GeoJSON
-            geometry = []
-            if 'features' in data and len(data['features']) > 0:
-                feature = data['features'][0]
-                if 'geometry' in feature and 'coordinates' in feature['geometry']:
-                    # Convert [lon, lat] -> (lat, lon)
-                    geometry = [(coord[1], coord[0]) for coord in feature['geometry']['coordinates']]
+                for i, chunk in enumerate(chunks):
+                    logger.info(f"Processing chunk {i+1}/{len(chunks)} with {len(chunk)} waypoints")
 
-            # Extract distance and duration from properties
-            distance = 0.0
-            duration = 0.0
-            if 'features' in data and len(data['features']) > 0:
-                properties = data['features'][0].get('properties', {})
-                summary = properties.get('summary', {})
-                distance = summary.get('distance', 0.0)  # meters
-                duration = summary.get('duration', 0.0)  # seconds
+                    try:
+                        chunk_result = self._get_directions_single_request(chunk)
 
-            return {
-                'geometry': geometry,
-                'distance': distance,
-                'duration': duration
-            }
+                        # Aggregate metrics
+                        total_distance += chunk_result['distance']
+                        total_duration += chunk_result['duration']
+
+                        # Aggregate geometry - skip the first point for chunks after the first to avoid duplicates
+                        chunk_geometry = chunk_result['geometry']
+                        if i > 0 and chunk_geometry:
+                            # Skip the first point to avoid duplication at chunk boundaries
+                            chunk_geometry = chunk_geometry[1:]
+                        aggregated_geometry.extend(chunk_geometry)
+
+                    except Exception as e:
+                        logger.error(f"Failed to get directions for chunk {i+1}: {str(e)}")
+                        # Return None to signal fallback to matrix-based estimation
+                        return None
+
+                return {
+                    'geometry': aggregated_geometry,
+                    'distance': total_distance,
+                    'duration': total_duration
+                }
 
         except requests.exceptions.Timeout as e:
             logger.error(f"Directions request timed out: {str(e)}")
-            raise
+            return None
         except requests.exceptions.RequestException as e:
             logger.error(f"Directions request failed: {str(e)}")
-            raise
+            return None
+        except Exception as e:
+            logger.error(f"Unexpected error in get_directions: {str(e)}")
+            return None
 
     def get_route_polylines(self, route_data: Dict, start_coords: Coords) -> List[List[Coords]]:
         """Extracts polylines from optimization response."""

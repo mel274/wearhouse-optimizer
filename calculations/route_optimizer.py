@@ -105,9 +105,18 @@ class RouteOptimizer:
             }
             
             # Calculate theoretical minimum trucks (Fleet Squeeze)
-            total_volume = sum(demands[1:]) / 1000.0  # Convert back from scaled units (m³)
+            total_volume = sum(demands[1:]) / 1000.0  # Convert back from scaled units
             avg_truck_capacity = ((small_capacity / 1000.0) + (big_capacity / 1000.0)) / 2.0  # Convert back to raw m³
+
+            # Detect unit mismatch: if volume >> capacity and capacity is small (m³ vs liters)
+            if total_volume > avg_truck_capacity and avg_truck_capacity < 1000:
+                # Volume is likely in liters, capacity in m³ - convert capacity to liters for comparison
+                avg_truck_capacity *= 1000
+                logger.info(f"Detected unit mismatch - converting capacity from m³ to liters for calculation")
+
             min_trucks = max(1, math.ceil(total_volume / avg_truck_capacity))
+            # Safety clamp: never exceed available fleet size
+            min_trucks = min(min_trucks, len(vehicle_capacities))
 
             logger.info(f"Fleet Squeeze: total_volume={total_volume:.1f}m³, avg_capacity={avg_truck_capacity:.1f}m³, theoretical_min={min_trucks} trucks")
 
@@ -175,6 +184,7 @@ class RouteOptimizer:
         # Log solver configuration
         service_time = params.get('service_time_seconds', 300)
         logger.info(f"Solver configuration: {vehicle_limit} vehicles (limited), max_shift={data['max_shift_seconds']}s, service_time={service_time}s")
+        data['vehicle_limit'] = vehicle_limit
 
         # Create the routing index manager
         manager = pywrapcp.RoutingIndexManager(num_nodes, vehicle_limit, depot)
@@ -318,7 +328,7 @@ class RouteOptimizer:
         # Set search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC
+            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
         )
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
@@ -385,7 +395,7 @@ class RouteOptimizer:
         num_small_trucks = len(data.get('small_truck_vehicle_indices', []))
         
         # Extract routes for each vehicle
-        for vehicle_id in range(data['num_vehicles']):
+        for vehicle_id in range(data.get('vehicle_limit', data['num_vehicles'])):
             route_nodes = []
             index = routing.Start(vehicle_id)
             
@@ -408,49 +418,57 @@ class RouteOptimizer:
                 route_coords = [coords[node] for node in full_route]
                 
                 # Get geometry and precise metrics from ORS Directions API
-                try:
-                    directions_data = self.ors_handler.get_directions(route_coords)
+                directions_data = self.ors_handler.get_directions(route_coords)
+
+                if directions_data is not None:
+                    # Successful ORS response - use detailed geometry and metrics
                     geometry = directions_data['geometry']
                     distance = directions_data['distance']
                     duration = directions_data['duration']
-                    
+
                     # Add service time for each customer stop
                     service_time = params.get('service_time_seconds', 300)
                     duration += len(route_nodes) * service_time
-                    
+
                     # Format polylines for frontend (list of coordinate lists)
                     polylines = [geometry] if geometry else []
-                    
-                    # Store route as list (for backward compatibility) and add vehicle_type to metrics
-                    routes.append(full_route)
-                    route_metrics.append({
-                        'distance': distance,
-                        'duration': duration,
-                        'polylines': polylines,
-                        'vehicle_type': vehicle_type,
-                        'vehicle_id': vehicle_id
-                    })
-                except Exception as e:
-                    logger.warning(f"Failed to get directions for vehicle {vehicle_id}: {e}. Using matrix estimates.")
-                    # Fallback: calculate from matrix
-                    total_distance = 0
-                    total_duration = 0
+
+                else:
+                    # Spider Web Fallback: ORS failed, use straight-line geometry
+                    logger.warning(f"ORS Limit Reached for Vehicle {vehicle_id}. Using Spider Web fallback.")
+
+                    # Create straight-line geometry connecting stops in order
+                    geometry = [(coords[node][0], coords[node][1]) for node in full_route]  # (lat, lng) tuples
+
+                    # Calculate metrics from internal matrices
+                    total_distance = 0.0
+                    total_duration = 0.0
                     for i in range(len(full_route) - 1):
                         from_node = full_route[i]
                         to_node = full_route[i + 1]
                         total_distance += data['distance_matrix'][from_node][to_node]
                         total_duration += data['time_matrix'][from_node][to_node]
-                    
+
+                    # Add service time for each customer stop
                     service_time = params.get('service_time_seconds', 300)
                     total_duration += len(route_nodes) * service_time
-                    
-                    route_metrics.append({
-                        'distance': total_distance,
-                        'duration': total_duration,
-                        'polylines': [],  # No geometry available
-                        'vehicle_type': vehicle_type,
-                        'vehicle_id': vehicle_id
-                    })
+
+                    # Use calculated values
+                    distance = total_distance
+                    duration = total_duration
+
+                    # Format polylines for frontend (list of coordinate lists)
+                    polylines = [geometry]
+
+                # Store route as list (for backward compatibility) and add vehicle_type to metrics
+                routes.append(full_route)
+                route_metrics.append({
+                    'distance': distance,
+                    'duration': duration,
+                    'polylines': polylines,
+                    'vehicle_type': vehicle_type,
+                    'vehicle_id': vehicle_id
+                })
         
         # Identify unserved customers
         all_customer_indices = set(range(1, len(locations)))
@@ -484,7 +502,7 @@ class RouteOptimizer:
                     remaining_unserved, coords, data['demands'], params, data
                 )
             
-            if new_routes:
+                if new_routes:
                     routes.extend(new_routes)
                     route_metrics.extend(new_metrics)
                     served_indices.update(newly_served)
