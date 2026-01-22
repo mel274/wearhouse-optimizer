@@ -104,9 +104,36 @@ class RouteOptimizer:
                 'small_truck_vehicle_indices': small_truck_vehicle_indices
             }
             
-            # Solve with OR-Tools
-            logger.info("Phase 1: Solving with OR-Tools...")
-            solution = self._solve_with_ortools(data, coords, locations, params)
+            # Calculate theoretical minimum trucks (Fleet Squeeze)
+            total_volume = sum(demands[1:]) / 1000.0  # Convert back from scaled units (m³)
+            avg_truck_capacity = ((small_capacity / 1000.0) + (big_capacity / 1000.0)) / 2.0  # Convert back to raw m³
+            min_trucks = max(1, math.ceil(total_volume / avg_truck_capacity))
+
+            logger.info(f"Fleet Squeeze: total_volume={total_volume:.1f}m³, avg_capacity={avg_truck_capacity:.1f}m³, theoretical_min={min_trucks} trucks")
+
+            # Iterative Squeeze Loop: Start with theoretical minimum, increment until solution found
+            solution = None
+            max_fleet_size = len(vehicle_capacities)
+
+            for n_trucks in range(min_trucks, max_fleet_size + 1):
+                logger.info(f"Attempting solve with {n_trucks} trucks...")
+                solution = self._solve_with_ortools(data, coords, locations, params, vehicle_limit=n_trucks)
+
+                if solution and solution.get('solution_found'):
+                    logger.info(f"Success with {n_trucks} trucks!")
+                    break  # Exit loop immediately on first success
+
+            # If no solution found with any fleet size, return failure
+            if not solution or not solution.get('solution_found'):
+                logger.error("Fleet Squeeze failed: No solution found with any fleet size")
+                return {
+                    'solution_found': False,
+                    'routes': [],
+                    'route_metrics': [],
+                    'unserved': [{'id': i, 'reason': 'Solver failed to find solution', 'demand': demands[i]} for i in range(1, len(demands))],
+                    'suggestions': {'all_served': False, 'message': 'Solver failed to find a feasible solution', 'suggestions': []},
+                    'metrics': {'total_distance': 0, 'total_time': 0, 'max_route_time': 0, 'num_vehicles_used': 0, 'customers_served': 0, 'customers_unserved': len(demands) - 1, 'service_rate': 0}
+                }
             
             # Store matrix data in solution for reuse (avoid duplicate API calls)
             solution['matrix_data'] = {
@@ -120,8 +147,8 @@ class RouteOptimizer:
             logger.error(f"Optimization Failed: {e}")
             raise
 
-    def _solve_with_ortools(self, data: Dict[str, Any], coords: List[Tuple[float, float]], 
-                            locations: List[str], params: OptimizationParams) -> Solution:
+    def _solve_with_ortools(self, data: Dict[str, Any], coords: List[Tuple[float, float]],
+                            locations: List[str], params: OptimizationParams, vehicle_limit: int) -> Solution:
         """
         Solve the VRP using OR-Tools RoutingModel.
         
@@ -140,15 +167,17 @@ class RouteOptimizer:
             params['service_time_seconds'] = 300
         
         num_nodes = len(data['distance_matrix'])
-        num_vehicles = data['num_vehicles']
         depot = data['depot']
-        
+
+        # Slice vehicle data to the specified limit
+        vehicle_capacities_limited = data['vehicle_capacities'][:vehicle_limit]
+
         # Log solver configuration
         service_time = params.get('service_time_seconds', 300)
-        logger.info(f"Solver configuration: {num_vehicles} vehicles, max_shift={data['max_shift_seconds']}s, service_time={service_time}s")
-        
+        logger.info(f"Solver configuration: {vehicle_limit} vehicles (limited), max_shift={data['max_shift_seconds']}s, service_time={service_time}s")
+
         # Create the routing index manager
-        manager = pywrapcp.RoutingIndexManager(num_nodes, num_vehicles, depot)
+        manager = pywrapcp.RoutingIndexManager(num_nodes, vehicle_limit, depot)
         
         # Create routing model
         routing = pywrapcp.RoutingModel(manager)
@@ -225,9 +254,9 @@ class RouteOptimizer:
         time_dimension = routing.GetDimensionOrDie("Time")
 
         # Add soft upper bounds for time (elastic constraints)
-        for vehicle_id in range(data['num_vehicles']):
+        for vehicle_id in range(vehicle_limit):
             index = routing.End(vehicle_id)
-            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 100_000)
+            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 1000)
 
         # Get the Time dimension and set global span cost to balance workloads across drivers
         time_dim = routing.GetDimensionOrDie("Time")
@@ -270,10 +299,10 @@ class RouteOptimizer:
         capacity_dimension = routing.GetDimensionOrDie("Capacity")
 
         # Add soft upper bounds for capacity (elastic constraints)
-        for vehicle_id in range(data['num_vehicles']):
+        for vehicle_id in range(vehicle_limit):
             index = routing.End(vehicle_id)
-            original_vehicle_capacity = data['vehicle_capacities'][vehicle_id]
-            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 100_000)
+            original_vehicle_capacity = vehicle_capacities_limited[vehicle_id]
+            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 1000)
         
         # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
         gush_dan_node_indices = data.get('gush_dan_node_indices', set())
@@ -289,12 +318,12 @@ class RouteOptimizer:
         # Set search parameters
         search_parameters = pywrapcp.DefaultRoutingSearchParameters()
         search_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
+            routing_enums_pb2.FirstSolutionStrategy.AUTOMATIC
         )
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 300  # 300 second time limit for greedy packing
+        search_parameters.time_limit.seconds = 60  # 60 second time limit for iterative squeeze
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")

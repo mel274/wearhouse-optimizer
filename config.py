@@ -54,12 +54,12 @@ class Config:
     }
 
     # --- OPTIMIZATION COSTS ---
-    # Hardcoded Standards - No Drops, Max Fill:
+    # Fleet Squeeze - Nuclear Pricing:
     # Stage 1 (Highest): Serve ALL customers (MANDATORY - no disjunctions)
-    # Stage 2 (Middle): Pack vehicles tightly with PATH_CHEAPEST_ARC
-    # Stage 3 (Lowest): Minimize fleet size aggressively (Cost: 2,000,000 per truck)
+    # Stage 2 (Middle): Pack vehicles tightly with AUTOMATIC strategy
+    # Stage 3 (Lowest): Minimize fleet size with NUCLEAR cost (Cost: 100,000,000 per truck)
     UNSERVED_PENALTY = 100_000_000_000  # Penalty for not serving a customer (100B)
-    VEHICLE_FIXED_COST = 2_000_000  # Fixed cost per vehicle used (2M) - forces minimum fleet
+    VEHICLE_FIXED_COST = 100_000_000  # Fixed cost per vehicle used (100M) - nuclear pricing
     
     # Customer Force (Percentile-based demand planning)
     # Deprecated: percentile-based Customer Force (kept for backward compatibility).
