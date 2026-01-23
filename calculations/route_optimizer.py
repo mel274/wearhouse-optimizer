@@ -391,6 +391,9 @@ class RouteOptimizer:
         route_metrics = []
         served_indices = set()
         
+        # Track coordinates that couldn't be routed (for UI warning)
+        all_skipped_coords = []
+        
         # Determine truck type based on vehicle index
         num_small_trucks = len(data.get('small_truck_vehicle_indices', []))
         
@@ -425,6 +428,11 @@ class RouteOptimizer:
                     geometry = directions_data['geometry']
                     distance = directions_data['distance']
                     duration = directions_data['duration']
+                    
+                    # Collect any skipped coordinates (unroutable points)
+                    skipped_coords = directions_data.get('skipped_coordinates', [])
+                    if skipped_coords:
+                        all_skipped_coords.extend(skipped_coords)
 
                     # Add service time for each customer stop
                     service_time = params.get('service_time_seconds', 300)
@@ -523,6 +531,21 @@ class RouteOptimizer:
         total_distance = sum(r['distance'] for r in route_metrics)
         total_time = sum(r['duration'] for r in route_metrics)
         max_route_time = max((r['duration'] for r in route_metrics), default=0)
+        
+        # Map skipped coordinates to node indices for UI display
+        skipped_node_indices = []
+        for skipped_coord in all_skipped_coords:
+            # Find the node index that matches this coordinate (approximate match due to float precision)
+            for node_idx, node_coord in enumerate(coords):
+                if (abs(node_coord[0] - skipped_coord[0]) < 0.0001 and 
+                    abs(node_coord[1] - skipped_coord[1]) < 0.0001):
+                    if node_idx != 0:  # Skip depot
+                        skipped_node_indices.append(node_idx)
+                    break
+        
+        # Log skipped customers
+        if skipped_node_indices:
+            logger.warning(f"Skipped {len(skipped_node_indices)} unroutable customers during directions fetch")
 
         return {
             'solution_found': True,
@@ -530,6 +553,7 @@ class RouteOptimizer:
             'route_metrics': route_metrics,
             'unserved': unserved_customers,
             'suggestions': suggestions,
+            'skipped_customers': skipped_node_indices,  # Node indices of customers with unroutable coordinates
             'metrics': {
                 'total_distance': total_distance,
                 'total_time': total_time,

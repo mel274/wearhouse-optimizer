@@ -6,6 +6,7 @@ import requests
 import logging
 import math
 import time
+import re
 from typing import List, Dict, Any, Tuple, Optional, Union
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
@@ -14,6 +15,26 @@ from shared.utils import decode_polyline, retry_with_backoff
 from config import Config
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_bad_coordinate_index(error_message: str) -> Optional[int]:
+    """
+    Parse the ORS error message to extract the index of the bad coordinate.
+    
+    ORS errors look like: "Could not find routable point within a radius of 350.0 meters 
+    of specified coordinate 3: 35.1846411 30.6140945"
+    
+    Returns the coordinate index (e.g., 3) or None if parsing fails.
+    """
+    try:
+        # Match pattern like "coordinate 3:" or "coordinate 25:"
+        match = re.search(r'coordinate\s+(\d+):', error_message)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return None
+
 
 class ORSHandler:
     # Maximum waypoints per directions request to avoid HTTP 400 errors
@@ -269,7 +290,10 @@ class ORSHandler:
         """
         Fetch route geometry (polylines) and precise distance/duration from ORS Directions API.
         Handles large routes by chunking them into smaller segments with overlapping waypoints.
-        Returns None on failure to allow fallback to matrix-based estimation.
+        
+        When a coordinate fails (unroutable), it is skipped and processing continues.
+        Returns dict with 'geometry', 'distance', 'duration', and 'skipped_coordinates'.
+        Returns None only on complete failure.
         """
         if not self.api_key:
             raise ValueError("API Key is required for directions requests.")
@@ -279,22 +303,30 @@ class ORSHandler:
 
         num_waypoints = len(route_coordinates)
         logger.info(f"Fetching directions for route with {num_waypoints} waypoints")
+        
+        # Track skipped coordinates (unroutable points)
+        skipped_coordinates = []
 
         try:
             # Check if chunking is required
             if num_waypoints <= self.MAX_WAYPOINTS_PER_REQUEST:
                 # Single request for small routes
-                return self._get_directions_single_request(route_coordinates)
+                result = self._get_directions_with_skip(route_coordinates, skipped_coordinates)
+                if result:
+                    result['skipped_coordinates'] = skipped_coordinates
+                return result
             else:
                 # Chunking required for large routes
                 logger.info(f"Route exceeds {self.MAX_WAYPOINTS_PER_REQUEST} waypoints, using chunking approach")
 
-                # Create overlapping chunks
+                # Create overlapping chunks with tracking of original indices
                 chunks = []
+                chunk_start_indices = []  # Track where each chunk starts in original coordinates
                 for start_idx in range(0, num_waypoints - 1, self.MAX_WAYPOINTS_PER_REQUEST - 1):
                     end_idx = min(start_idx + self.MAX_WAYPOINTS_PER_REQUEST, num_waypoints)
                     chunk = route_coordinates[start_idx:end_idx]
                     chunks.append(chunk)
+                    chunk_start_indices.append(start_idx)
 
                 logger.info(f"Created {len(chunks)} chunks for route segmentation")
 
@@ -306,9 +338,9 @@ class ORSHandler:
                 for i, chunk in enumerate(chunks):
                     logger.info(f"Processing chunk {i+1}/{len(chunks)} with {len(chunk)} waypoints")
 
-                    try:
-                        chunk_result = self._get_directions_single_request(chunk)
-
+                    chunk_result = self._get_directions_with_skip(chunk, skipped_coordinates)
+                    
+                    if chunk_result:
                         # Aggregate metrics
                         total_distance += chunk_result['distance']
                         total_duration += chunk_result['duration']
@@ -319,16 +351,17 @@ class ORSHandler:
                             # Skip the first point to avoid duplication at chunk boundaries
                             chunk_geometry = chunk_geometry[1:]
                         aggregated_geometry.extend(chunk_geometry)
-
-                    except Exception as e:
-                        logger.error(f"Failed to get directions for chunk {i+1}: {str(e)}")
-                        # Return None to signal fallback to matrix-based estimation
-                        return None
+                    else:
+                        # Chunk completely failed even after skipping - use straight lines for this chunk
+                        logger.warning(f"Chunk {i+1} failed completely, using straight-line fallback for this segment")
+                        for coord in chunk:
+                            aggregated_geometry.append((coord[0], coord[1]))
 
                 return {
                     'geometry': aggregated_geometry,
                     'distance': total_distance,
-                    'duration': total_duration
+                    'duration': total_duration,
+                    'skipped_coordinates': skipped_coordinates
                 }
 
         except requests.exceptions.Timeout as e:
@@ -340,6 +373,43 @@ class ORSHandler:
         except Exception as e:
             logger.error(f"Unexpected error in get_directions: {str(e)}")
             return None
+
+    def _get_directions_with_skip(self, coordinates: List[Coords], 
+                                   skipped_list: List[Coords]) -> Optional[Dict[str, Any]]:
+        """
+        Try to get directions for coordinates, skipping any unroutable points.
+        Modifies skipped_list in place to track skipped coordinates.
+        """
+        current_coords = list(coordinates)
+        max_skip_attempts = len(coordinates) - 2  # Need at least 2 points for a route
+        
+        for attempt in range(max_skip_attempts + 1):
+            if len(current_coords) < 2:
+                logger.warning("Not enough coordinates left after skipping, cannot get directions")
+                return None
+                
+            try:
+                return self._get_directions_single_request(current_coords)
+            except Exception as e:
+                error_str = str(e)
+                
+                # Try to parse which coordinate failed
+                bad_idx = _parse_bad_coordinate_index(error_str)
+                
+                if bad_idx is not None and 0 <= bad_idx < len(current_coords):
+                    bad_coord = current_coords[bad_idx]
+                    logger.warning(f"Skipping unroutable coordinate at index {bad_idx}: {bad_coord}")
+                    skipped_list.append(bad_coord)
+                    
+                    # Remove the bad coordinate and retry
+                    current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
+                else:
+                    # Cannot parse error or index out of range - give up on this chunk
+                    logger.error(f"Cannot identify bad coordinate from error: {error_str}")
+                    return None
+        
+        logger.warning("Max skip attempts reached")
+        return None
 
     def get_route_polylines(self, route_data: Dict, start_coords: Coords) -> List[List[Coords]]:
         """Extracts polylines from optimization response."""

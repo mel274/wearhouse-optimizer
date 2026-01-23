@@ -68,7 +68,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         st.error("No geocoded data.")
         return
 
-    demand_col = 'total_quantity'  # Use actual daily volumes for strict optimization
+    demand_col = 'force_volume'  # Use Customer Force (mean + std × buffer) for daily demand estimate
 
     if demand_col not in valid_coords.columns:
         st.error(f"Demand column '{demand_col}' not found in the uploaded data.")
@@ -265,6 +265,20 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             if unserved_list:
                 unserved_ids = [str(u.get('id', 'Unknown')) for u in unserved_list]
                 st.error(f"⚠️ Unserved Customers Detected: {', '.join(unserved_ids)}")
+
+            # Skipped Customers Warning (unroutable coordinates)
+            skipped_indices = solution.get('skipped_customers', [])
+            if skipped_indices:
+                skipped_names = []
+                for node_idx in skipped_indices:
+                    # Node index 1 corresponds to row 0 in valid_coords (node 0 is warehouse)
+                    customer_row_idx = node_idx - 1
+                    if 0 <= customer_row_idx < len(valid_coords):
+                        customer_name = valid_coords.iloc[customer_row_idx].get('שם לקוח', f'Customer {node_idx}')
+                        skipped_names.append(str(customer_name))
+                    else:
+                        skipped_names.append(f'Customer {node_idx}')
+                st.warning(f"⚠️ Skipped Customers (unroutable coordinates): {', '.join(skipped_names)}")
 
             # MAP Visualization
             st.subheader("Route Map")
