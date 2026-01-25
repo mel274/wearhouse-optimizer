@@ -129,6 +129,10 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
                 # Default to big truck if unknown
                 route_capacities.append(big_truck_vol)
         
+        # Ensure we use the standard 'Date' column name in the simulation
+        if order_date_col != 'Date':
+            filtered_data_with_coords['Date'] = filtered_data_with_coords[order_date_col]
+            
         simulation_results = run_historical_simulation(
             historical_data=filtered_data_with_coords,
             master_routes=solution['routes'],
@@ -136,15 +140,12 @@ def tab_compare_actuals(services: Optional[Dict[str, Any]]) -> None:
             time_matrix=st.session_state.time_matrix,
             node_map=st.session_state.node_map,
             service_time_seconds=st.session_state.optimization_params.get('service_time_seconds', 900),
-            date_col=order_date_col,
+            date_col='Date',  # Always use 'Date' as the column name
             customer_id_col="מס' לקוח",
             depot=0,
             route_capacities=route_capacities,
             max_shift_seconds=st.session_state.optimization_params.get('max_shift_seconds')
         )
-
-    # Convert Date column to datetime for filtering
-    simulation_results['Date'] = pd.to_datetime(simulation_results['Date'])
 
     # Use ComparisonService to calculate comparison metrics
     comparison_metrics = services['comparison_service'].calculate_comparison_metrics(

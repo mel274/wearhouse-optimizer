@@ -334,7 +334,7 @@ def run_historical_simulation(
     time_matrix: List[List[float]],
     node_map: Dict[Any, int],
     service_time_seconds: int,
-    date_col: str = 'תאריך אספקה',
+    date_col: str = 'Date',
     customer_id_col: str = "מס' לקוח",
     quantity_col: str = 'כמות',
     depot: int = 0,
