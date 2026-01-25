@@ -279,12 +279,12 @@ class RouteOptimizer:
         # Get the Time dimension and set global span cost to balance workloads across drivers
         time_dim = routing.GetDimensionOrDie("Time")
         time_dim.SetGlobalSpanCostCoefficient(100)
-        
+
         # Demand callback - returns the scaled volume demand for each node
         def demand_callback(from_index: int) -> int:
             """
             Returns the scaled volume demand of the node (m³ * 1000 as integer).
-            
+
             Note: Node 0 (depot) should have demand 0.
             Customer nodes have their scaled effective volume (force_volume / safety_factor * 1000).
             """
