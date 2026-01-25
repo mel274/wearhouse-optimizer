@@ -53,6 +53,10 @@ class Config:
         'safety_factor': 0.7
     }
 
+    # Exception tolerance for simulation (retry mechanism)
+    # Percentage of total drives that can exceed limits before retry
+    AVAILABLE_EXCEPTION_PERCENT = 0.03  # 3% of total drives can exceed limits
+
     # --- OPTIMIZATION COSTS ---
     # Fleet Squeeze - Nuclear Pricing:
     # Stage 1 (Highest): Serve ALL customers (MANDATORY - no disjunctions)

@@ -53,7 +53,8 @@ class RouteOptimizer:
               demands: List[int], 
               params: OptimizationParams, 
               coords: List[Tuple[float, float]],
-              customer_details: Optional[List[Dict[str, Any]]] = None) -> Solution:
+              customer_details: Optional[List[Dict[str, Any]]] = None,
+              min_trucks_override: int = None) -> Solution:
         """
         Executes the optimization pipeline using OR-Tools global solver.
         
@@ -64,6 +65,7 @@ class RouteOptimizer:
             params: Optimization parameters including scaled capacities (small_capacity, big_capacity)
             coords: List of (lat, lng) coordinates for each location
             customer_details: Optional list of dicts with customer info (name, id, address) matching coords list
+            min_trucks_override: If provided, Fleet Squeeze starts from this minimum instead of calculated minimum
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
@@ -180,11 +182,17 @@ class RouteOptimizer:
 
             logger.info(f"Fleet Squeeze: total_volume={total_volume:.1f}m³, avg_capacity={avg_truck_capacity:.1f}m³, theoretical_min={min_trucks} trucks")
 
+            # Apply min_trucks_override if provided (used by exception budget retry)
+            start_trucks = min_trucks
+            if min_trucks_override is not None and min_trucks_override > min_trucks:
+                start_trucks = min(min_trucks_override, len(vehicle_capacities))
+                logger.info(f"Min trucks override: starting from {start_trucks} trucks (override={min_trucks_override})")
+
             # Iterative Squeeze Loop: Start with theoretical minimum, increment until solution found
             solution = None
             max_fleet_size = len(vehicle_capacities)
 
-            for n_trucks in range(min_trucks, max_fleet_size + 1):
+            for n_trucks in range(start_trucks, max_fleet_size + 1):
                 logger.info(f"Attempting solve with {n_trucks} trucks...")
                 solution = self._solve_with_ortools(data, working_coords, working_locations, params, vehicle_limit=n_trucks)
 
@@ -368,24 +376,14 @@ class RouteOptimizer:
         
         demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
         
-        # Add capacity dimension with soft constraints (elastic walls)
-        # 1. Add the dimension (returns bool, discard result)
-        routing.AddDimension(
+        # Add capacity dimension with hard constraints (per-vehicle limits)
+        routing.AddDimensionWithVehicleCapacity(
             demand_callback_index,
             0,  # slack
-            1000000,  # capacity (infinite for soft constraints)
+            vehicle_capacities_limited,  # list of per-vehicle capacities (hard limits)
             True,  # fix_start_cumul_to_zero
             "Capacity"
         )
-
-        # 2. Retrieve the dimension object explicitly
-        capacity_dimension = routing.GetDimensionOrDie("Capacity")
-
-        # Add soft upper bounds for capacity (elastic constraints)
-        for vehicle_id in range(vehicle_limit):
-            index = routing.End(vehicle_id)
-            original_vehicle_capacity = vehicle_capacities_limited[vehicle_id]
-            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 1000)
         
         # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
         gush_dan_node_indices = data.get('gush_dan_node_indices', set())
