@@ -340,24 +340,15 @@ class RouteOptimizer:
         
         time_callback_index = routing.RegisterTransitCallback(time_callback)
         
-        # Add time dimension with soft constraints (elastic walls) - 48 hour horizon
-        # Allows solver to exceed time limits with penalties
-        # 1. Add the dimension (returns bool)
+        # Hard time limit: routes cannot exceed max_shift_seconds
+        # The solver must always stay within the shift time limit set by the user
         routing.AddDimension(
             time_callback_index,
             0,  # slack
-            172800,  # horizon (48 hours for soft constraints)
+            data['max_shift_seconds'],  # hard cap - uses max_shift_seconds from UI settings
             True,  # fix_start_cumul_to_zero
             "Time"
         )
-
-        # 2. Retrieve the dimension object explicitly
-        time_dimension = routing.GetDimensionOrDie("Time")
-
-        # Add soft upper bounds for time (elastic constraints)
-        for vehicle_id in range(vehicle_limit):
-            index = routing.End(vehicle_id)
-            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 1000)
 
         # Get the Time dimension and set global span cost to balance workloads across drivers
         time_dim = routing.GetDimensionOrDie("Time")
