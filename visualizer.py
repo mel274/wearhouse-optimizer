@@ -215,23 +215,27 @@ class MapBuilder:
                             popup=f'<div>Route {route_idx + 1}</div>'
                         ).add_to(m)
 
-            # 2. Process Skipped Customers (failed during visualization)
-            skipped_indices = solution.get('skipped_customers', [])
-            for skipped_node_idx in skipped_indices:
-                if skipped_node_idx - 1 < len(locations_df):
-                    cust = locations_df.iloc[skipped_node_idx - 1]
+            # 2. Process Removed Customers (optimization + visualization failures)
+            removed_customers = solution.get('removed_customers', [])
+            for removed in removed_customers:
+                original_idx = removed.get('original_index')
+                if original_idx and original_idx - 1 < len(locations_df):
+                    cust = locations_df.iloc[original_idx - 1]
                     coords = (cust['lat'], cust['lng'])
                     
-                    # Find which route this customer belonged to
-                    route_idx = None
-                    route_color = 'gray'  # Default if route not found
-                    for r_idx, route in enumerate(routes):
-                        if skipped_node_idx in route:
-                            route_idx = r_idx
-                            route_color = self.colors[r_idx % len(self.colors)]
-                            break
+                    # Determine route color
+                    route_id = removed.get('route_id')  # Only present for visualization failures
+                    if route_id is not None:
+                        # Visualization failure - use route color
+                        route_color = self.colors[route_id % len(self.colors)]
+                        route_info = f"Route {route_id + 1}"
+                    else:
+                        # Optimization failure - use default color (gray)
+                        route_color = 'gray'
+                        route_info = "Not assigned (removed during optimization)"
                     
-                    self._add_skipped_marker(m, cust, coords, route_idx, route_color)
+                    # Use existing _add_skipped_marker method (already has X marker logic)
+                    self._add_skipped_marker(m, cust, coords, route_id, route_color)
 
             # 3. Process Unserved Customers
             unserved_list = solution.get('unserved', [])
@@ -283,16 +287,16 @@ class MapBuilder:
         ).add_to(m)
 
     def _add_skipped_marker(self, m, customer, coords, route_idx, route_color):
-        """Helper to add an X marker for skipped customers (failed during visualization) in route color."""
+        """Helper to add an X marker for failed customers in route color (or gray if unassigned)."""
         # Use Customer Force (force_volume)
         vol = customer.get('force_volume', 0)
-        route_info = f"Route {route_idx + 1}" if route_idx is not None else "Unknown Route"
+        route_info = f"Route {route_idx + 1}" if route_idx is not None else "Not assigned (removed during optimization)"
 
         popup_html = f"""
         <div style="font-family: Arial, sans-serif;">
             <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
-            <span style="font-weight: bold; color: {route_color};">✕ SKIPPED DURING VISUALIZATION</span><br>
-            Assigned to: {route_info}<br>
+            <span style="font-weight: bold; color: {route_color};">✕ FAILED</span><br>
+            {route_info}<br>
             Customer Force: {round(vol, 2)} m³
         </div>
         """
@@ -307,7 +311,7 @@ class MapBuilder:
                 icon_size=(24, 24),
                 icon_anchor=(12, 12)
             ),
-            tooltip=f"Skipped: {customer.get('שם לקוח', 'N/A')} ({route_info})"
+            tooltip=f"Failed: {customer.get('שם לקוח', 'N/A')} ({route_info})"
         ).add_to(m)
 
     def _add_failed_marker(self, m, customer, coords, reason):

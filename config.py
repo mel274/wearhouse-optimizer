@@ -79,7 +79,7 @@ class Config:
     ORS_CONNECT_TIMEOUT = 10
     ORS_READ_TIMEOUT = 120  # Increased from 30 to 120 seconds
     ORS_MAX_RETRIES = 3
-    ORS_MATRIX_CHUNK_SIZE = 1000  # ORS API limit is ~50 locations per request
+    ORS_MATRIX_CHUNK_SIZE = 2000  # only relevant for large location sets when using api not loacl docker.
     
     # --- GRACEFUL EXECUTION SETTINGS ---
     RATE_LIMIT_DELAY = 0.1  # Wait 0.1 seconds between API calls (Prevents overloading)

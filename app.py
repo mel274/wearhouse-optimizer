@@ -1,7 +1,7 @@
 import streamlit as st
 import logging
 from ui_components import init_session_state, setup_sidebar
-from ui.tabs import tab_data_upload, tab_optimization, tab_static_routes, tab_compare_actuals, tab_export
+from ui.tabs import tab_data_upload, tab_optimization, tab_compare_actuals, tab_export
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,10 +27,9 @@ def main() -> None:
     services = setup_sidebar()
     st.title("Warehouse Location & Route Optimizer")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([
         "Data Upload",
         "Optimization",
-        "Static Routes",
         "Comparison",
         "Export"
     ])
@@ -40,10 +39,8 @@ def main() -> None:
     with tab2:
         tab_optimization(services)
     with tab3:
-        tab_static_routes(services)
-    with tab4:
         tab_compare_actuals(services)
-    with tab5:
+    with tab4:
         tab_export()
 
 
