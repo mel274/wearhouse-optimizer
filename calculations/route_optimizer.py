@@ -67,7 +67,7 @@ class RouteOptimizer:
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
-        # Initialize tracking for removed customers
+        # Initialize tracking for removed customer
         removed_customers = []
         
         # Maintain mapping from current indices to original indices

@@ -18,4 +18,5 @@ Thumbs.db
 # My files
 geocode_cache.pkl
 .env
+.md
 
