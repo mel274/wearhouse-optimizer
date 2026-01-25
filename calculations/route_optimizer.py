@@ -5,13 +5,14 @@ Version: 3.0 (OR-Tools Integration)
 import logging
 import time
 import math
-from typing import List, Dict, Any, Tuple, Set
+from typing import List, Dict, Any, Tuple, Set, Optional
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from .types import Solution, OptimizationParams, UnservedCustomer
 from . import ors, metrics
 import shared.utils as utils
 from config import Config
+from exceptions import UnroutablePointError
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,8 @@ class RouteOptimizer:
               locations: List[str], 
               demands: List[int], 
               params: OptimizationParams, 
-              coords: List[Tuple[float, float]]) -> Solution:
+              coords: List[Tuple[float, float]],
+              customer_details: Optional[List[Dict[str, Any]]] = None) -> Solution:
         """
         Executes the optimization pipeline using OR-Tools global solver.
         
@@ -61,19 +63,77 @@ class RouteOptimizer:
                      Index 0 should be 0 (depot), customer nodes have scaled effective volumes.
             params: Optimization parameters including scaled capacities (small_capacity, big_capacity)
             coords: List of (lat, lng) coordinates for each location
+            customer_details: Optional list of dicts with customer info (name, id, address) matching coords list
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
+        # Initialize tracking for removed customers
+        removed_customers = []
+        
+        # Maintain mapping from current indices to original indices
+        # original_indices[i] = original index of the coordinate currently at position i
+        original_indices = list(range(len(coords)))
+        
+        # Working copies that will be pruned
+        working_coords = list(coords)
+        working_demands = list(demands)
+        working_locations = list(locations)
+        working_customer_details = list(customer_details) if customer_details else [None] * len(coords)
+        
         try:
-            # --- Phase 0: Data Prep & Matrix ---
-            if not coords:
+            # --- Phase 0: Data Prep & Matrix with Self-Healing Loop ---
+            if not working_coords:
                 raise ValueError("No coordinates provided.")
             
-            logger.info("Phase 0: Fetching Distance Matrix (with caching)...")
-            matrix_data = self.ors_handler.get_distance_matrix(coords)
+            # Self-Healing Loop: Retry matrix fetch after removing bad coordinates
+            max_removal_attempts = len(working_coords) - 1  # Can't remove all (need at least depot)
+            removal_attempt = 0
+            
+            while removal_attempt < max_removal_attempts:
+                try:
+                    logger.info(f"Phase 0: Fetching Distance Matrix (attempt {removal_attempt + 1})...")
+                    matrix_data = self.ors_handler.get_distance_matrix(working_coords)
+                    # Success! Break out of retry loop
+                    break
+                    
+                except UnroutablePointError as e:
+                    bad_index = e.index
+                    logger.warning(f"Unroutable point detected at index {bad_index}: {e.message}")
+                    
+                    # Check if it's the warehouse (index 0) - this is fatal
+                    if bad_index == 0:
+                        raise ValueError("Warehouse location is unroutable. Cannot proceed with optimization.")
+                    
+                    # Identify the customer being removed
+                    original_customer_index = original_indices[bad_index]
+                    
+                    # Extract customer details for reporting
+                    customer_info = {
+                        'original_index': original_customer_index,
+                        'name': working_customer_details[bad_index].get('name', f'Customer {original_customer_index}') if working_customer_details[bad_index] else f'Customer {original_customer_index}',
+                        'id': working_customer_details[bad_index].get('id', str(original_customer_index)) if working_customer_details[bad_index] else str(original_customer_index),
+                        'address': working_customer_details[bad_index].get('address', 'Unknown') if working_customer_details[bad_index] else 'Unknown'
+                    }
+                    
+                    removed_customers.append(customer_info)
+                    logger.warning(f"Removing customer: {customer_info['name']} (ID: {customer_info['id']}) at original index {original_customer_index}")
+                    
+                    # Prune all parallel lists
+                    del working_coords[bad_index]
+                    del working_demands[bad_index]
+                    del working_locations[bad_index]
+                    del working_customer_details[bad_index]
+                    del original_indices[bad_index]
+                    
+                    removal_attempt += 1
+                    logger.info(f"Retrying with {len(working_coords)} locations (removed {removal_attempt} unroutable point(s))...")
+            
+            # If we exhausted removal attempts, raise error
+            if removal_attempt >= max_removal_attempts:
+                raise ValueError(f"Too many unroutable points. Removed {removal_attempt} customers but still cannot fetch matrix.")
             
             # --- Phase 0.5: Identify Gush Dan Customers ---
-            gush_dan_node_indices = self._identify_gush_dan_customers(coords)
+            gush_dan_node_indices = self._identify_gush_dan_customers(working_coords)
             logger.info(f"Identified {len(gush_dan_node_indices)} Gush Dan customers (must use Small Trucks)")
             
             # --- Phase 0.6: Setup Heterogeneous Fleet ---
@@ -95,7 +155,7 @@ class RouteOptimizer:
             data = {
                 'distance_matrix': matrix_data['distances'],
                 'time_matrix': matrix_data['durations'],
-                'demands': demands,  # Scaled volume demands (m³ * 1000). Node 0 is warehouse with demand 0
+                'demands': working_demands,  # Scaled volume demands (m³ * 1000). Node 0 is warehouse with demand 0
                 'vehicle_capacities': vehicle_capacities,  # Scaled volume capacities (m³ * 1000)
                 'num_vehicles': total_fleet_size,
                 'depot': 0,
@@ -105,7 +165,7 @@ class RouteOptimizer:
             }
             
             # Calculate theoretical minimum trucks (Fleet Squeeze)
-            total_volume = sum(demands[1:]) / 1000.0  # Convert back from scaled units
+            total_volume = sum(working_demands[1:]) / 1000.0  # Convert back from scaled units
             avg_truck_capacity = ((small_capacity / 1000.0) + (big_capacity / 1000.0)) / 2.0  # Convert back to raw m³
 
             # Detect unit mismatch: if volume >> capacity and capacity is small (m³ vs liters)
@@ -126,7 +186,7 @@ class RouteOptimizer:
 
             for n_trucks in range(min_trucks, max_fleet_size + 1):
                 logger.info(f"Attempting solve with {n_trucks} trucks...")
-                solution = self._solve_with_ortools(data, coords, locations, params, vehicle_limit=n_trucks)
+                solution = self._solve_with_ortools(data, working_coords, working_locations, params, vehicle_limit=n_trucks)
 
                 if solution and solution.get('solution_found'):
                     logger.info(f"Success with {n_trucks} trucks!")
@@ -135,14 +195,27 @@ class RouteOptimizer:
             # If no solution found with any fleet size, return failure
             if not solution or not solution.get('solution_found'):
                 logger.error("Fleet Squeeze failed: No solution found with any fleet size")
+                # Remap unserved indices to original indices
+                unserved_original = []
+                for u in [{'id': i, 'reason': 'Solver failed to find solution', 'demand': working_demands[i]} for i in range(1, len(working_demands))]:
+                    original_id = original_indices[u['id']] if u['id'] < len(original_indices) else u['id']
+                    unserved_original.append({**u, 'id': original_id})
+                
                 return {
                     'solution_found': False,
                     'routes': [],
                     'route_metrics': [],
-                    'unserved': [{'id': i, 'reason': 'Solver failed to find solution', 'demand': demands[i]} for i in range(1, len(demands))],
+                    'unserved': unserved_original,
+                    'removed_customers': removed_customers,
                     'suggestions': {'all_served': False, 'message': 'Solver failed to find a feasible solution', 'suggestions': []},
-                    'metrics': {'total_distance': 0, 'total_time': 0, 'max_route_time': 0, 'num_vehicles_used': 0, 'customers_served': 0, 'customers_unserved': len(demands) - 1, 'service_rate': 0}
+                    'metrics': {'total_distance': 0, 'total_time': 0, 'max_route_time': 0, 'num_vehicles_used': 0, 'customers_served': 0, 'customers_unserved': len(working_demands) - 1, 'service_rate': 0}
                 }
+            
+            # Remap all node indices in solution back to original indices
+            solution = self._remap_solution_indices(solution, original_indices)
+            
+            # Add removed_customers to solution
+            solution['removed_customers'] = removed_customers
             
             # Store matrix data in solution for reuse (avoid duplicate API calls)
             solution['matrix_data'] = {
@@ -657,6 +730,53 @@ class RouteOptimizer:
                 })
         
         return routes, metrics_list, served
+
+    def _remap_solution_indices(self, solution: Solution, original_indices: List[int]) -> Solution:
+        """
+        Remap all node indices in the solution back to their original indices.
+        
+        Args:
+            solution: Solution dictionary with routes, unserved, etc.
+            original_indices: Mapping from current index to original index (original_indices[i] = original index)
+        
+        Returns:
+            Solution with all node indices remapped to original indices
+        """
+        remapped_solution = solution.copy()
+        
+        # Remap routes: each route is a list of node indices
+        if 'routes' in remapped_solution:
+            remapped_routes = []
+            for route in remapped_solution['routes']:
+                remapped_route = []
+                for node_idx in route:
+                    if node_idx < len(original_indices):
+                        remapped_route.append(original_indices[node_idx])
+                    else:
+                        # Index out of range (shouldn't happen, but defensive)
+                        remapped_route.append(node_idx)
+                remapped_routes.append(remapped_route)
+            remapped_solution['routes'] = remapped_routes
+        
+        # Remap unserved customers: each has an 'id' field
+        if 'unserved' in remapped_solution:
+            remapped_unserved = []
+            for u in remapped_solution['unserved']:
+                original_id = original_indices[u['id']] if u['id'] < len(original_indices) else u['id']
+                remapped_unserved.append({**u, 'id': original_id})
+            remapped_solution['unserved'] = remapped_unserved
+        
+        # Remap skipped_customers: list of node indices
+        if 'skipped_customers' in remapped_solution:
+            remapped_skipped = []
+            for node_idx in remapped_solution['skipped_customers']:
+                if node_idx < len(original_indices):
+                    remapped_skipped.append(original_indices[node_idx])
+                else:
+                    remapped_skipped.append(node_idx)
+            remapped_solution['skipped_customers'] = remapped_skipped
+        
+        return remapped_solution
 
     def _generate_suggestions(self, unserved_customers, demands, params, coords, served_count, total_customers):
         """Generate optimization suggestions based on unserved customers."""

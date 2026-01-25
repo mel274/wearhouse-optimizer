@@ -215,7 +215,25 @@ class MapBuilder:
                             popup=f'<div>Route {route_idx + 1}</div>'
                         ).add_to(m)
 
-            # 2. Process Unserved Customers
+            # 2. Process Skipped Customers (failed during visualization)
+            skipped_indices = solution.get('skipped_customers', [])
+            for skipped_node_idx in skipped_indices:
+                if skipped_node_idx - 1 < len(locations_df):
+                    cust = locations_df.iloc[skipped_node_idx - 1]
+                    coords = (cust['lat'], cust['lng'])
+                    
+                    # Find which route this customer belonged to
+                    route_idx = None
+                    route_color = 'gray'  # Default if route not found
+                    for r_idx, route in enumerate(routes):
+                        if skipped_node_idx in route:
+                            route_idx = r_idx
+                            route_color = self.colors[r_idx % len(self.colors)]
+                            break
+                    
+                    self._add_skipped_marker(m, cust, coords, route_idx, route_color)
+
+            # 3. Process Unserved Customers
             unserved_list = solution.get('unserved', [])
             for unserved in unserved_list:
                 u_idx = unserved['id']
@@ -262,6 +280,34 @@ class MapBuilder:
                 icon_size=(24, 24),
                 icon_anchor=(12, 12)
             )
+        ).add_to(m)
+
+    def _add_skipped_marker(self, m, customer, coords, route_idx, route_color):
+        """Helper to add an X marker for skipped customers (failed during visualization) in route color."""
+        # Use Customer Force (force_volume)
+        vol = customer.get('force_volume', 0)
+        route_info = f"Route {route_idx + 1}" if route_idx is not None else "Unknown Route"
+
+        popup_html = f"""
+        <div style="font-family: Arial, sans-serif;">
+            <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
+            <span style="font-weight: bold; color: {route_color};">✕ SKIPPED DURING VISUALIZATION</span><br>
+            Assigned to: {route_info}<br>
+            Customer Force: {round(vol, 2)} m³
+        </div>
+        """
+        
+        # Create a colored X marker using DivIcon
+        folium.Marker(
+            location=coords,
+            popup=folium.Popup(popup_html, max_width=300),
+            icon=folium.DivIcon(
+                html=f'<div style="color: {route_color}; font-size: 24px; font-weight: bold; '
+                     f'text-shadow: 2px 2px 4px rgba(0,0,0,0.5); line-height: 1;">✕</div>',
+                icon_size=(24, 24),
+                icon_anchor=(12, 12)
+            ),
+            tooltip=f"Skipped: {customer.get('שם לקוח', 'N/A')} ({route_info})"
         ).add_to(m)
 
     def _add_failed_marker(self, m, customer, coords, reason):

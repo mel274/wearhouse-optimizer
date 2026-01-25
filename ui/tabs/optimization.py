@@ -139,6 +139,16 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
                 demands = [0] + estimated_demand.tolist()
 
+                # Prepare customer_details for self-healing mechanism
+                # Index 0 is warehouse (None), then customer details
+                customer_details = [None]  # Warehouse has no customer details
+                for idx, row in valid_coords.iterrows():
+                    customer_details.append({
+                        'name': row.get('שם לקוח', f'Customer {idx}'),
+                        'id': str(row.get("מס' לקוח", idx)),
+                        'address': row.get('כתובת', row.get('Address', 'Unknown'))
+                    })
+
                 # Use strict 1x constraints (no tolerances)
                 base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
 
@@ -159,7 +169,8 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     [f"Loc {i}" for i in range(len(matrix_coords))],
                     demands,
                     params,
-                    coords=matrix_coords
+                    coords=matrix_coords,
+                    customer_details=customer_details
                 )
 
                 st.session_state.solution = solution
@@ -254,7 +265,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
         if solution['solution_found']:
             num_routes = len(solution['routes'])
             unserved_list = solution.get('unserved', [])
-
+            
             # Status Reporting
             if unserved_list:
                 st.warning(f"Optimization complete with warnings: {num_routes} trucks used. {len(unserved_list)} customers could not be served.")
@@ -266,20 +277,6 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 unserved_ids = [str(u.get('id', 'Unknown')) for u in unserved_list]
                 st.error(f"⚠️ Unserved Customers Detected: {', '.join(unserved_ids)}")
 
-            # Skipped Customers Warning (unroutable coordinates)
-            skipped_indices = solution.get('skipped_customers', [])
-            if skipped_indices:
-                skipped_names = []
-                for node_idx in skipped_indices:
-                    # Node index 1 corresponds to row 0 in valid_coords (node 0 is warehouse)
-                    customer_row_idx = node_idx - 1
-                    if 0 <= customer_row_idx < len(valid_coords):
-                        customer_name = valid_coords.iloc[customer_row_idx].get('שם לקוח', f'Customer {node_idx}')
-                        skipped_names.append(str(customer_name))
-                    else:
-                        skipped_names.append(f'Customer {node_idx}')
-                st.warning(f"⚠️ Skipped Customers (unroutable coordinates): {', '.join(skipped_names)}")
-
             # MAP Visualization
             st.subheader("Route Map")
             phase2_map = services['map_builder'].create_phase2_map(
@@ -287,6 +284,44 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 geo_service=st.session_state.geo_service
             )
             st.components.v1.html(phase2_map._repr_html_(), height=700)
+
+            # Unified Failed Customers Display
+            removed_customers = solution.get('removed_customers', [])
+            skipped_indices = solution.get('skipped_customers', [])
+            
+            if removed_customers or skipped_indices:
+                total_failed = len(removed_customers) + len(skipped_indices)
+                with st.expander(f"Unroutable Customers Details ({total_failed} customers)", expanded=False):
+                    failed_data = []
+                    
+                    # Add removed customers (optimization phase)
+                    for removed in removed_customers:
+                        failed_data.append({
+                            'Customer Name': removed.get('name', 'Unknown'),
+                            'Address': removed.get('address', 'Unknown'),
+                            'Error Reason': 'Removed during optimization (not included in routes)'
+                        })
+                    
+                    # Add skipped customers (visualization phase)
+                    for node_idx in skipped_indices:
+                        customer_row_idx = node_idx - 1  # Node 0 is warehouse
+                        if 0 <= customer_row_idx < len(valid_coords):
+                            row = valid_coords.iloc[customer_row_idx]
+                            failed_data.append({
+                                'Customer Name': row.get('שם לקוח', f'Customer {node_idx}'),
+                                'Address': row.get('כתובת', row.get('Address', 'Unknown')),
+                                'Error Reason': 'Skipped during visualization (included in routes but unroutable)'
+                            })
+                        else:
+                            failed_data.append({
+                                'Customer Name': f'Customer {node_idx}',
+                                'Address': 'Unknown',
+                                'Error Reason': 'Skipped during visualization (included in routes but unroutable)'
+                            })
+                    
+                    if failed_data:
+                        failed_df = pd.DataFrame(failed_data)
+                        st.dataframe(failed_df, width='stretch', hide_index=True)
 
             # Expandable Route Details
             st.subheader("Route Details")

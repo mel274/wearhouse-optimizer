@@ -29,3 +29,10 @@ class OptimizationError(WarehouseOptimizerError):
 class CacheError(WarehouseOptimizerError):
     """Raised when cache operations fail."""
     pass
+
+class UnroutablePointError(WarehouseOptimizerError):
+    """Raised when a coordinate cannot be routed by the ORS API."""
+    def __init__(self, index: int, message: str = ""):
+        self.index = index
+        self.message = message
+        super().__init__(f"Coordinate at index {index} is unroutable: {message}")
