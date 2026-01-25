@@ -424,7 +424,7 @@ class RouteOptimizer:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 60  # 60 second time limit for iterative squeeze
+        search_parameters.time_limit.seconds = 300  # 5 minute time limit for iterative squeeze
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")

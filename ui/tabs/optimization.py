@@ -4,6 +4,7 @@ Handles route optimization and fleet capacity calculations.
 """
 import streamlit as st
 import numpy as np
+import pandas as pd
 import logging
 from typing import Dict, Any, Optional
 from config import Config
@@ -265,5 +266,54 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 st.warning(f"Optimization complete with warnings: {num_routes} trucks used. {len(unserved_list)} customers could not be served.")
             else:
                 st.success(f"Optimization complete: {num_routes} trucks used. All customers served.")
+
+            if services.get('map_builder') is None:
+                from visualizer import MapBuilder
+                services['map_builder'] = MapBuilder()
+
+            wh_coords = st.session_state.warehouse_coords
+            if wh_coords:
+                try:
+                    phase2_map = services['map_builder'].create_phase2_map(
+                        solution,
+                        valid_coords,
+                        wh_coords,
+                        geo_service=st.session_state.geo_service
+                    )
+                    st.components.v1.html(phase2_map._repr_html_(), height=600)
+                except Exception as e:
+                    st.error(f"Error displaying solution map: {str(e)}")
+                    logger.error(f"Error displaying solution map: {e}")
+            else:
+                st.warning("Warehouse coordinates are missing; map display is unavailable.")
+
+            st.subheader("Route Details")
+            route_metrics = solution.get('route_metrics', [])
+            for route_idx, route in enumerate(solution['routes']):
+                if len(route) <= 2:
+                    continue
+
+                metrics = route_metrics[route_idx] if route_idx < len(route_metrics) else {}
+                vehicle_type = metrics.get('vehicle_type', 'Unknown')
+                with st.expander(f"Route {route_idx + 1} - {vehicle_type} Truck"):
+                    if metrics:
+                        st.write(f"Distance: {metrics.get('distance', 0):.1f} meters")
+                        st.write(f"Duration: {metrics.get('duration', 0) / 3600:.1f} hours")
+
+                    route_customers = []
+                    for node_idx in route[1:-1]:
+                        if node_idx > 0 and node_idx - 1 < len(valid_coords):
+                            customer = valid_coords.iloc[node_idx - 1]
+                            route_customers.append({
+                                'Customer ID': str(customer.get("מס' לקוח", "")),
+                                'Customer Name': customer.get('שם לקוח', 'N/A'),
+                                'Address': customer.get('כתובת', 'N/A'),
+                                'Customer Force (m³)': round(customer.get('force_volume', 0), 2)
+                            })
+
+                    if route_customers:
+                        st.dataframe(pd.DataFrame(route_customers), width="stretch")
+                    else:
+                        st.caption("No customers listed for this route.")
         else:
             st.error("Optimization failed.")
