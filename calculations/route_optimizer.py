@@ -339,20 +339,28 @@ class RouteOptimizer:
             return int(total_time)
         
         time_callback_index = routing.RegisterTransitCallback(time_callback)
-        
-        # Hard time limit: routes cannot exceed max_shift_seconds
-        # The solver must always stay within the shift time limit set by the user
+
+        # Master Route Planning: Use SOFT time constraints
+        # Master routes are territory assignments - they group customers into logical routes.
+        # The actual time constraint enforcement happens in simulation when testing daily sub-routes.
+        # Using soft constraints here allows the solver to find valid territory assignments
+        # even when the theoretical "all customers visited" time exceeds the shift limit.
         routing.AddDimension(
             time_callback_index,
             0,  # slack
-            data['max_shift_seconds'],  # hard cap - uses max_shift_seconds from UI settings
+            int(data['max_shift_seconds'] * 1.2),  # 120% of shift limit (soft constraint ceiling)
             True,  # fix_start_cumul_to_zero
             "Time"
         )
 
-        # Get the Time dimension and set global span cost to balance workloads across drivers
-        time_dim = routing.GetDimensionOrDie("Time")
-        time_dim.SetGlobalSpanCostCoefficient(100)
+        # Apply soft upper bound for time - penalize exceeding max_shift_seconds
+        time_dimension = routing.GetDimensionOrDie("Time")
+        for vehicle_id in range(vehicle_limit):
+            index = routing.End(vehicle_id)
+            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 1000)
+
+        # Set global span cost to balance workloads across drivers
+        time_dimension.SetGlobalSpanCostCoefficient(100)
         
         # Demand callback - returns the scaled volume demand for each node
         def demand_callback(from_index: int) -> int:
