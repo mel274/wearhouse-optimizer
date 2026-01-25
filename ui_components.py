@@ -78,6 +78,17 @@ def setup_sidebar() -> Dict[str, Any]:
         step=0.1,
         help="Statistical multiplier for Standard Deviation (Force Calculation)"
     )
+    
+    st.sidebar.subheader("Exception Tolerance")
+    available_exception_percent = st.sidebar.slider(
+        'Available Exception %',
+        min_value=0,
+        max_value=10,
+        value=int(Config.AVAILABLE_EXCEPTION_PERCENT * 100),
+        step=1,
+        format="%d%%",
+        help="Maximum percentage of total drives that can exceed limits. If exceeded, system will retry with additional Big Trucks."
+    ) / 100.0  # Convert back to decimal
 
 
     return {
@@ -86,6 +97,7 @@ def setup_sidebar() -> Dict[str, Any]:
         'num_small_trucks': num_small_trucks,
         'max_shift_hours': max_shift_hours,
         'service_time_minutes': service_time_minutes,
+        'available_exception_percent': available_exception_percent,
         'data_manager': None,  # Will be imported when needed
         'map_builder': None,   # Will be imported when needed
         'route_optimizer': None,  # Will be imported when needed

@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 from config import Config
 from calculations.route_optimizer import RouteOptimizer
-from calculations.simulation import create_node_map, run_historical_simulation
+from calculations.simulation import create_node_map, run_historical_simulation, count_simulation_exceptions
 from visualizer import MapBuilder
 from exceptions import DataValidationError, GeocodingError, APIRateLimitError
 import shared.utils as utils
@@ -107,7 +107,9 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
     # Define fleet composition from UI inputs
     num_big_trucks = services.get('num_big_trucks', 12)
     num_small_trucks = services.get('num_small_trucks', 6)
-    total_fleet_size = num_small_trucks + num_big_trucks
+    
+    # Get exception budget parameter
+    available_exception_percent = services.get('available_exception_percent', Config.AVAILABLE_EXCEPTION_PERCENT)
 
     if st.button("Run Optimization", type="primary"):
         try:
@@ -135,98 +137,152 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
 
             st.session_state.warehouse_coords = wh_coords
 
-            with st.spinner("calculating optimization..."):
-                matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
-                demands = [0] + estimated_demand.tolist()
+            # Prepare common data for optimization
+            matrix_coords = [wh_coords] + list(zip(valid_coords['lat'], valid_coords['lng']))
+            demands = [0] + estimated_demand.tolist()
+            base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
 
-                # Use strict 1x constraints (no tolerances)
-                base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
+            # Exception Budget Retry Loop
+            # Fleet Squeeze finds minimum trucks, then simulation checks budget
+            # If budget exceeded, retry forcing more trucks until budget met or fleet exhausted
+            total_fleet_size = num_small_trucks + num_big_trucks
+            min_trucks_required = None  # Let Fleet Squeeze calculate on first attempt
+            final_solution = None
+            final_sim_results = None
+            budget_met = False
 
-                logger.info(f"Strict optimization: using raw capacities and time limits")
+            progress_placeholder = st.empty()
 
-                params = {
-                    'fleet_size': total_fleet_size,
-                    'num_small_trucks': num_small_trucks,
-                    'num_big_trucks': num_big_trucks,
-                    'small_capacity': small_capacity,          # Use raw capacity (1x)
-                    'big_capacity': big_capacity,              # Use raw capacity (1x)
-                    'max_shift_seconds': base_shift_seconds,   # Use raw time (1x)
-                    'service_time_seconds': services['service_time_minutes'] * 60
-                }
+            params = {
+                'fleet_size': total_fleet_size,
+                'num_small_trucks': num_small_trucks,
+                'num_big_trucks': num_big_trucks,
+                'small_capacity': small_capacity,
+                'big_capacity': big_capacity,
+                'max_shift_seconds': base_shift_seconds,
+                'service_time_seconds': services['service_time_minutes'] * 60
+            }
+
+            while True:
+                if min_trucks_required is not None:
+                    progress_placeholder.info(f"Retrying with minimum {min_trucks_required} trucks...")
+                    logger.info(f"Optimization attempt: forcing minimum {min_trucks_required} trucks")
+                else:
+                    progress_placeholder.info(f"Optimizing with Fleet Squeeze...")
+                    logger.info(f"Optimization attempt: Fleet Squeeze with {total_fleet_size} available trucks")
 
                 # CALL OPTIMIZER
                 solution = services['route_optimizer'].solve(
                     [f"Loc {i}" for i in range(len(matrix_coords))],
                     demands,
                     params,
-                    coords=matrix_coords
+                    coords=matrix_coords,
+                    min_trucks_override=min_trucks_required
                 )
 
-                st.session_state.solution = solution
+                if not solution['solution_found']:
+                    logger.warning(f"Optimization failed")
+                    break
 
-                # Store matrices and node map for historical simulation
-                # Reuse matrix data from solution to avoid duplicate API calls
+                # Store matrices and node map
                 if 'matrix_data' in solution:
-                    # Use matrix data already fetched during optimization
                     matrix_data = solution['matrix_data']
                     st.session_state.distance_matrix = matrix_data['distances']
                     st.session_state.time_matrix = matrix_data['durations']
                 else:
-                    # Fallback: fetch if not in solution (shouldn't happen, but defensive)
                     logger.warning("Matrix data not found in solution, fetching from API")
                     matrix_data = services['route_optimizer'].ors_handler.get_distance_matrix(matrix_coords)
                     st.session_state.distance_matrix = matrix_data['distances']
                     st.session_state.time_matrix = matrix_data['durations']
+
                 st.session_state.node_map = create_node_map(valid_coords)
+
+                # Run simulation to check exception budget
+                required_session_keys = ['raw_data', 'distance_matrix', 'time_matrix', 'node_map']
+                missing_keys = [key for key in required_session_keys if not hasattr(st.session_state, key) or getattr(st.session_state, key) is None]
+
+                if missing_keys:
+                    logger.warning(f"Cannot run simulation, missing: {missing_keys}")
+                    final_solution = solution
+                    budget_met = True
+                    break
+
+                # Build route capacities list based on vehicle type
+                route_metrics = solution.get('route_metrics', [])
+                route_capacities = []
+                small_truck_vol = services['fleet_settings']['small_truck_vol']
+                big_truck_vol = services['fleet_settings']['big_truck_vol']
+                for idx in range(len(solution['routes'])):
+                    if idx < len(route_metrics):
+                        vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
+                        if vehicle_type == 'Small':
+                            route_capacities.append(small_truck_vol)
+                        else:
+                            route_capacities.append(big_truck_vol)
+                    else:
+                        route_capacities.append(big_truck_vol)
+
+                sim_results = run_historical_simulation(
+                    historical_data=st.session_state.raw_data,
+                    master_routes=solution['routes'],
+                    distance_matrix=st.session_state.distance_matrix,
+                    time_matrix=st.session_state.time_matrix,
+                    node_map=st.session_state.node_map,
+                    service_time_seconds=params['service_time_seconds'],
+                    date_col='תאריך אספקה',
+                    customer_id_col="מס' לקוח",
+                    quantity_col='total_volume_m3',
+                    route_capacities=route_capacities,
+                    max_shift_seconds=params.get('max_shift_seconds')
+                )
+
+                # Check exception budget
+                exception_count, total_drives = count_simulation_exceptions(sim_results)
+                exception_budget = available_exception_percent * total_drives
+
+                logger.info(f"Exception check: {exception_count} exceptions vs budget {exception_budget:.1f} ({available_exception_percent*100:.1f}% of {total_drives} drives)")
+
+                if exception_count <= exception_budget:
+                    # Budget met - success!
+                    final_solution = solution
+                    final_sim_results = sim_results
+                    budget_met = True
+                    trucks_used = solution['metrics']['num_vehicles_used']
+                    progress_placeholder.success(f"Success with {trucks_used} trucks! {exception_count} exceptions within budget of {exception_budget:.1f} ({available_exception_percent*100:.1f}%)")
+                    logger.info(f"Exception budget met with {trucks_used} trucks")
+                    break
+                else:
+                    # Budget exceeded - try with more trucks
+                    trucks_used = solution['metrics']['num_vehicles_used']
+                    progress_placeholder.warning(f"{trucks_used} trucks: {exception_count} exceptions exceed budget {exception_budget:.1f}. Retrying...")
+                    logger.info(f"Exception budget exceeded: {exception_count} > {exception_budget:.1f}. Retrying with more trucks.")
+                    final_solution = solution  # Keep last solution in case we hit fleet max
+                    final_sim_results = sim_results
+                    
+                    # Set minimum trucks for next attempt
+                    if min_trucks_required is None:
+                        min_trucks_required = trucks_used + 1
+                    else:
+                        min_trucks_required += 1
+                    
+                    # Check if we've exhausted the fleet
+                    if min_trucks_required > total_fleet_size:
+                        logger.warning(f"Fleet exhausted: cannot use more than {total_fleet_size} trucks")
+                        break
+
+            # Store final results
+            if final_solution:
+                st.session_state.solution = final_solution
                 st.session_state.optimization_params = params
                 st.session_state.valid_coords_for_simulation = valid_coords
 
-                if solution['solution_found']:
-                    
-                    
-                    # Automatic Simulation: Run historical simulation immediately after optimization
-                    required_session_keys = ['raw_data', 'distance_matrix', 'time_matrix', 'node_map']
-                    missing_keys = [key for key in required_session_keys if not hasattr(st.session_state, key) or getattr(st.session_state, key) is None]
-                    
-                    if not missing_keys:
-                        try:
-                            with st.spinner("Running historical simulation..."):
-                                # Build route capacities list based on vehicle type
-                                route_metrics = solution.get('route_metrics', [])
-                                route_capacities = []
-                                small_truck_vol = services['fleet_settings']['small_truck_vol']
-                                big_truck_vol = services['fleet_settings']['big_truck_vol']
-                                for idx in range(len(solution['routes'])):
-                                    if idx < len(route_metrics):
-                                        vehicle_type = route_metrics[idx].get('vehicle_type', 'Unknown')
-                                        if vehicle_type == 'Small':
-                                            route_capacities.append(small_truck_vol)
-                                        else:
-                                            route_capacities.append(big_truck_vol)
-                                    else:
-                                        # Default to big truck if unknown
-                                        route_capacities.append(big_truck_vol)
-                                
-                                sim_results = run_historical_simulation(
-                                    historical_data=st.session_state.raw_data,
-                                    master_routes=solution['routes'],
-                                    distance_matrix=st.session_state.distance_matrix,
-                                    time_matrix=st.session_state.time_matrix,
-                                    node_map=st.session_state.node_map,
-                                    service_time_seconds=params['service_time_seconds'],
-                                    date_col='תאריך אספקה',
-                                    customer_id_col="מס' לקוח",
-                                    quantity_col='total_volume_m3',
-                                    route_capacities=route_capacities,
-                                    max_shift_seconds=params.get('max_shift_seconds')
-                                )
-                                st.session_state.simulation_results = sim_results
-                        except Exception as e:
-                            logger.error(f"Simulation failed: {e}")
-                            st.warning(f"Routes generated successfully, but historical simulation failed. Error: {str(e)}")
-                            st.session_state.simulation_results = None
-                else:
-                    st.error("Optimization failed.")
+                if final_sim_results is not None:
+                    st.session_state.simulation_results = final_sim_results
+
+                if not budget_met:
+                    st.warning(f"Fleet limit reached ({total_fleet_size} trucks). Solution found but exception budget may be exceeded. Consider adjusting constraints.")
+            else:
+                st.error("Optimization failed.")
 
         except DataValidationError as e:
             st.error(f"Data validation error: {str(e)}")

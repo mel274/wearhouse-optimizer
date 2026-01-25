@@ -12,6 +12,34 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 logger = logging.getLogger(__name__)
 
 
+def count_simulation_exceptions(sim_results: pd.DataFrame) -> Tuple[int, int]:
+    """
+    Count total exceptions (failures) and total drives from simulation results.
+    
+    An exception is a route-day where the status is NOT "OK" (i.e., Overload, Overtime, or both).
+    Total drives is the sum of all active routes across all simulation days.
+    
+    Args:
+        sim_results: DataFrame from run_historical_simulation containing Route_Breakdown
+        
+    Returns:
+        Tuple of (exception_count, total_drives)
+    """
+    exception_count = 0
+    total_drives = 0
+    
+    for _, row in sim_results.iterrows():
+        route_breakdown = row.get('Route_Breakdown', [])
+        for route_data in route_breakdown:
+            total_drives += 1
+            # Count as exception if success is False (Overload, Overtime, or both)
+            if not route_data.get('success', True):
+                exception_count += 1
+    
+    logger.info(f"Simulation exceptions: {exception_count} / {total_drives} total drives")
+    return exception_count, total_drives
+
+
 def create_node_map(optimization_data: pd.DataFrame, customer_id_col: str = "מס' לקוח") -> Dict[Any, int]:
     """
     Create a mapping from Customer ID to Matrix Index.
