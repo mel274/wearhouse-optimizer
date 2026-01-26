@@ -13,7 +13,6 @@ from urllib3.util.retry import Retry
 from .types import MatrixData, Coords, RouteMetrics
 from shared.utils import decode_polyline, retry_with_backoff
 from config import Config
-from exceptions import UnroutablePointError
 
 logger = logging.getLogger(__name__)
 
@@ -133,18 +132,6 @@ class ORSHandler:
                 headers=headers,
                 timeout=timeout
             )
-            
-            # Check for 400 Bad Request (unroutable point)
-            if response.status_code == 400:
-                error_text = response.text
-                logger.error(f"ORS API returned 400 Bad Request: {error_text}")
-                bad_index = _parse_bad_coordinate_index(error_text)
-                if bad_index is not None:
-                    raise UnroutablePointError(bad_index, error_text)
-                else:
-                    # Can't parse index, raise generic HTTPError
-                    response.raise_for_status()
-            
             response.raise_for_status()
             
             data = response.json()
@@ -153,9 +140,6 @@ class ORSHandler:
                 'distances': data['distances']
             }
             
-        except UnroutablePointError:
-            # Re-raise our custom exception
-            raise
         except requests.exceptions.Timeout as e:
             logger.error(f"Request timed out after {timeout} seconds: {str(e)}")
             raise
@@ -216,32 +200,6 @@ class ORSHandler:
                         headers=headers,
                         timeout=timeout
                     )
-                    
-                    # Check for 400 Bad Request (unroutable point)
-                    if response.status_code == 400:
-                        error_text = response.text
-                        logger.error(f"ORS API returned 400 Bad Request in chunk: {error_text}")
-                        bad_index = _parse_bad_coordinate_index(error_text)
-                        if bad_index is not None:
-                            # Map batch-relative index to global index
-                            # The batch contains source_chunk + dest_chunk
-                            # Index could be in either source or destination
-                            total_batch_size = len(source_formatted) + len(dest_formatted)
-                            if bad_index < len(source_formatted):
-                                # Bad coordinate is in source chunk
-                                global_index = source_start + bad_index
-                            elif bad_index < total_batch_size:
-                                # Bad coordinate is in destination chunk
-                                dest_relative_index = bad_index - len(source_formatted)
-                                global_index = dest_start + dest_relative_index
-                            else:
-                                # Index out of range, use as-is (shouldn't happen)
-                                global_index = bad_index
-                            raise UnroutablePointError(global_index, error_text)
-                        else:
-                            # Can't parse index, raise generic HTTPError
-                            response.raise_for_status()
-                    
                     response.raise_for_status()
                     
                     data = response.json()
@@ -257,9 +215,6 @@ class ORSHandler:
                                 durations_matrix[source_idx][dest_idx] = chunk_durations[i][j]
                                 distances_matrix[source_idx][dest_idx] = chunk_distances[i][j]
                     
-                except UnroutablePointError:
-                    # Re-raise our custom exception
-                    raise
                 except requests.exceptions.RequestException as e:
                     logger.error(f"Failed to fetch chunk: {str(e)}")
                     raise
@@ -294,31 +249,8 @@ class ORSHandler:
             timeout=self.timeout
         )
 
-        # Enhanced error handling: check for 404 (unroutable point) or other errors
-        if response.status_code == 404:
-            # Try to parse JSON error response
-            try:
-                error_data = response.json()
-                error_message = ""
-                if 'error' in error_data and 'message' in error_data['error']:
-                    error_message = error_data['error']['message']
-                else:
-                    error_message = response.text
-                
-                logger.error(f"ORS API returned 404 Not Found: {error_message}")
-                
-                # Try to parse the bad coordinate index from the error message
-                bad_index = _parse_bad_coordinate_index(error_message)
-                if bad_index is not None:
-                    raise UnroutablePointError(bad_index, error_message)
-                else:
-                    # Can't parse index, raise generic HTTPError
-                    response.raise_for_status()
-            except (ValueError, KeyError):
-                # Not valid JSON or missing fields, raise generic error
-                logger.error(f"ORS API returned 404 but couldn't parse error: {response.text}")
-                response.raise_for_status()
-        elif response.status_code != 200:
+        # Enhanced error handling: log response.text on non-200 status
+        if response.status_code != 200:
             logger.error(f"ORS API returned status {response.status_code}: {response.text}")
             response.raise_for_status()
 
@@ -458,24 +390,10 @@ class ORSHandler:
                 
             try:
                 return self._get_directions_single_request(current_coords)
-            except UnroutablePointError as e:
-                # Our custom exception with the bad index
-                bad_idx = e.index
-                if 0 <= bad_idx < len(current_coords):
-                    bad_coord = current_coords[bad_idx]
-                    logger.warning(f"Skipping unroutable coordinate at index {bad_idx}: {bad_coord}")
-                    skipped_list.append(bad_coord)
-                    
-                    # Remove the bad coordinate and retry
-                    current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
-                else:
-                    # Index out of range - give up on this chunk
-                    logger.error(f"Bad coordinate index {bad_idx} out of range for {len(current_coords)} coordinates")
-                    return None
             except Exception as e:
                 error_str = str(e)
                 
-                # Try to parse which coordinate failed (fallback for other error types)
+                # Try to parse which coordinate failed
                 bad_idx = _parse_bad_coordinate_index(error_str)
                 
                 if bad_idx is not None and 0 <= bad_idx < len(current_coords):

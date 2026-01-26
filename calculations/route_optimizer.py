@@ -5,14 +5,13 @@ Version: 3.0 (OR-Tools Integration)
 import logging
 import time
 import math
-from typing import List, Dict, Any, Tuple, Set, Optional
+from typing import List, Dict, Any, Tuple, Set
 from ortools.constraint_solver import routing_enums_pb2
 from ortools.constraint_solver import pywrapcp
 from .types import Solution, OptimizationParams, UnservedCustomer
 from . import ors, metrics
 import shared.utils as utils
 from config import Config
-from exceptions import UnroutablePointError
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +52,7 @@ class RouteOptimizer:
               demands: List[int], 
               params: OptimizationParams, 
               coords: List[Tuple[float, float]],
-              customer_details: Optional[List[Dict[str, Any]]] = None) -> Solution:
+              min_trucks_override: int = None) -> Solution:
         """
         Executes the optimization pipeline using OR-Tools global solver.
         
@@ -63,78 +62,20 @@ class RouteOptimizer:
                      Index 0 should be 0 (depot), customer nodes have scaled effective volumes.
             params: Optimization parameters including scaled capacities (small_capacity, big_capacity)
             coords: List of (lat, lng) coordinates for each location
-            customer_details: Optional list of dicts with customer info (name, id, address) matching coords list
+            min_trucks_override: If provided, Fleet Squeeze starts from this minimum instead of calculated minimum
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
-        # Initialize tracking for removed customers
-        removed_customers = []
-        
-        # Maintain mapping from current indices to original indices
-        # original_indices[i] = original index of the coordinate currently at position i
-        original_indices = list(range(len(coords)))
-        
-        # Working copies that will be pruned
-        working_coords = list(coords)
-        working_demands = list(demands)
-        working_locations = list(locations)
-        working_customer_details = list(customer_details) if customer_details else [None] * len(coords)
-        
         try:
-            # --- Phase 0: Data Prep & Matrix with Self-Healing Loop ---
-            if not working_coords:
+            # --- Phase 0: Data Prep & Matrix ---
+            if not coords:
                 raise ValueError("No coordinates provided.")
             
-            # Self-Healing Loop: Retry matrix fetch after removing bad coordinates
-            max_removal_attempts = len(working_coords) - 1  # Can't remove all (need at least depot)
-            removal_attempt = 0
-            
-            while removal_attempt < max_removal_attempts:
-                try:
-                    logger.info(f"Phase 0: Fetching Distance Matrix (attempt {removal_attempt + 1})...")
-                    matrix_data = self.ors_handler.get_distance_matrix(working_coords)
-                    # Success! Break out of retry loop
-                    break
-                    
-                except UnroutablePointError as e:
-                    bad_index = e.index
-                    logger.warning(f"Unroutable point detected at index {bad_index}: {e.message}")
-                    
-                    # Check if it's the warehouse (index 0) - this is fatal
-                    if bad_index == 0:
-                        raise ValueError("Warehouse location is unroutable. Cannot proceed with optimization.")
-                    
-                    # Identify the customer being removed
-                    original_customer_index = original_indices[bad_index]
-                    
-                    # Extract customer details for reporting
-                    customer_info = {
-                        'original_index': original_customer_index,
-                        'name': working_customer_details[bad_index].get('name', f'Customer {original_customer_index}') if working_customer_details[bad_index] else f'Customer {original_customer_index}',
-                        'id': working_customer_details[bad_index].get('id', str(original_customer_index)) if working_customer_details[bad_index] else str(original_customer_index),
-                        'address': working_customer_details[bad_index].get('address', 'Unknown') if working_customer_details[bad_index] else 'Unknown',
-                        'fail_reason': 'Optimization Failure: Unroutable during distance matrix calculation'
-                    }
-                    
-                    removed_customers.append(customer_info)
-                    logger.warning(f"Removing customer: {customer_info['name']} (ID: {customer_info['id']}) at original index {original_customer_index}")
-                    
-                    # Prune all parallel lists
-                    del working_coords[bad_index]
-                    del working_demands[bad_index]
-                    del working_locations[bad_index]
-                    del working_customer_details[bad_index]
-                    del original_indices[bad_index]
-                    
-                    removal_attempt += 1
-                    logger.info(f"Retrying with {len(working_coords)} locations (removed {removal_attempt} unroutable point(s))...")
-            
-            # If we exhausted removal attempts, raise error
-            if removal_attempt >= max_removal_attempts:
-                raise ValueError(f"Too many unroutable points. Removed {removal_attempt} customers but still cannot fetch matrix.")
+            logger.info("Phase 0: Fetching Distance Matrix (with caching)...")
+            matrix_data = self.ors_handler.get_distance_matrix(coords)
             
             # --- Phase 0.5: Identify Gush Dan Customers ---
-            gush_dan_node_indices = self._identify_gush_dan_customers(working_coords)
+            gush_dan_node_indices = self._identify_gush_dan_customers(coords)
             logger.info(f"Identified {len(gush_dan_node_indices)} Gush Dan customers (must use Small Trucks)")
             
             # --- Phase 0.6: Setup Heterogeneous Fleet ---
@@ -156,7 +97,7 @@ class RouteOptimizer:
             data = {
                 'distance_matrix': matrix_data['distances'],
                 'time_matrix': matrix_data['durations'],
-                'demands': working_demands,  # Scaled volume demands (m³ * 1000). Node 0 is warehouse with demand 0
+                'demands': demands,  # Scaled volume demands (m³ * 1000). Node 0 is warehouse with demand 0
                 'vehicle_capacities': vehicle_capacities,  # Scaled volume capacities (m³ * 1000)
                 'num_vehicles': total_fleet_size,
                 'depot': 0,
@@ -166,7 +107,7 @@ class RouteOptimizer:
             }
             
             # Calculate theoretical minimum trucks (Fleet Squeeze)
-            total_volume = sum(working_demands[1:]) / 1000.0  # Convert back from scaled units
+            total_volume = sum(demands[1:]) / 1000.0  # Convert back from scaled units
             avg_truck_capacity = ((small_capacity / 1000.0) + (big_capacity / 1000.0)) / 2.0  # Convert back to raw m³
 
             # Detect unit mismatch: if volume >> capacity and capacity is small (m³ vs liters)
@@ -181,14 +122,19 @@ class RouteOptimizer:
 
             logger.info(f"Fleet Squeeze: total_volume={total_volume:.1f}m³, avg_capacity={avg_truck_capacity:.1f}m³, theoretical_min={min_trucks} trucks")
 
+            # Apply min_trucks_override if provided (used by exception budget retry)
+            start_trucks = min_trucks
+            if min_trucks_override is not None and min_trucks_override > min_trucks:
+                start_trucks = min(min_trucks_override, len(vehicle_capacities))
+                logger.info(f"Min trucks override: starting from {start_trucks} trucks (override={min_trucks_override})")
+
             # Iterative Squeeze Loop: Start with theoretical minimum, increment until solution found
             solution = None
             max_fleet_size = len(vehicle_capacities)
 
-            for n_trucks in range(min_trucks, max_fleet_size + 1):
+            for n_trucks in range(start_trucks, max_fleet_size + 1):
                 logger.info(f"Attempting solve with {n_trucks} trucks...")
-                solution = self._solve_with_ortools(data, working_coords, working_locations, params, vehicle_limit=n_trucks,
-                                                   customer_details=working_customer_details, original_indices=original_indices)
+                solution = self._solve_with_ortools(data, coords, locations, params, vehicle_limit=n_trucks)
 
                 if solution and solution.get('solution_found'):
                     logger.info(f"Success with {n_trucks} trucks!")
@@ -197,38 +143,14 @@ class RouteOptimizer:
             # If no solution found with any fleet size, return failure
             if not solution or not solution.get('solution_found'):
                 logger.error("Fleet Squeeze failed: No solution found with any fleet size")
-                # Remap unserved indices to original indices
-                unserved_original = []
-                for u in [{'id': i, 'reason': 'Solver failed to find solution', 'demand': working_demands[i]} for i in range(1, len(working_demands))]:
-                    original_id = original_indices[u['id']] if u['id'] < len(original_indices) else u['id']
-                    unserved_original.append({**u, 'id': original_id})
-                
                 return {
                     'solution_found': False,
                     'routes': [],
                     'route_metrics': [],
-                    'unserved': unserved_original,
-                    'removed_customers': removed_customers,
+                    'unserved': [{'id': i, 'reason': 'Solver failed to find solution', 'demand': demands[i]} for i in range(1, len(demands))],
                     'suggestions': {'all_served': False, 'message': 'Solver failed to find a feasible solution', 'suggestions': []},
-                    'metrics': {'total_distance': 0, 'total_time': 0, 'max_route_time': 0, 'num_vehicles_used': 0, 'customers_served': 0, 'customers_unserved': len(working_demands) - 1, 'service_rate': 0}
+                    'metrics': {'total_distance': 0, 'total_time': 0, 'max_route_time': 0, 'num_vehicles_used': 0, 'customers_served': 0, 'customers_unserved': len(demands) - 1, 'service_rate': 0}
                 }
-            
-            # Remap all node indices in solution back to original indices
-            solution = self._remap_solution_indices(solution, original_indices)
-            
-            # Merge visualization failures into removed_customers
-            visualization_failed = solution.get('visualization_failed_customers', [])
-            if visualization_failed:
-                # Visualization failures are already mapped to original indices in _extract_solution
-                removed_customers.extend(visualization_failed)
-                logger.info(f"Merged {len(visualization_failed)} visualization failures into removed_customers")
-            
-            # Remove visualization_failed_customers from solution (now merged into removed_customers)
-            if 'visualization_failed_customers' in solution:
-                del solution['visualization_failed_customers']
-            
-            # Add removed_customers to solution (includes both optimization and visualization failures)
-            solution['removed_customers'] = removed_customers
             
             # Store matrix data in solution for reuse (avoid duplicate API calls)
             solution['matrix_data'] = {
@@ -243,9 +165,7 @@ class RouteOptimizer:
             raise
 
     def _solve_with_ortools(self, data: Dict[str, Any], coords: List[Tuple[float, float]],
-                            locations: List[str], params: OptimizationParams, vehicle_limit: int,
-                            customer_details: Optional[List[Dict[str, Any]]] = None,
-                            original_indices: Optional[List[int]] = None) -> Solution:
+                            locations: List[str], params: OptimizationParams, vehicle_limit: int) -> Solution:
         """
         Solve the VRP using OR-Tools RoutingModel.
         
@@ -254,9 +174,6 @@ class RouteOptimizer:
             coords: List of (lat, lng) coordinates
             locations: List of location identifiers
             params: Optimization parameters
-            vehicle_limit: Maximum number of vehicles to use
-            customer_details: Optional list of dicts with customer info (name, id, address) matching coords list
-            original_indices: Optional mapping from current index to original index (original_indices[i] = original index)
             
         Returns:
             Solution dictionary with routes, metrics, and unserved customers
@@ -386,24 +303,14 @@ class RouteOptimizer:
         
         demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
         
-        # Add capacity dimension with soft constraints (elastic walls)
-        # 1. Add the dimension (returns bool, discard result)
-        routing.AddDimension(
+        # Add capacity dimension with hard constraints (per-vehicle limits)
+        routing.AddDimensionWithVehicleCapacity(
             demand_callback_index,
             0,  # slack
-            1000000,  # capacity (infinite for soft constraints)
+            vehicle_capacities_limited,  # list of per-vehicle capacities (hard limits)
             True,  # fix_start_cumul_to_zero
             "Capacity"
         )
-
-        # 2. Retrieve the dimension object explicitly
-        capacity_dimension = routing.GetDimensionOrDie("Capacity")
-
-        # Add soft upper bounds for capacity (elastic constraints)
-        for vehicle_id in range(vehicle_limit):
-            index = routing.End(vehicle_id)
-            original_vehicle_capacity = vehicle_capacities_limited[vehicle_id]
-            capacity_dimension.SetCumulVarSoftUpperBound(index, original_vehicle_capacity, 1000)
         
         # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
         gush_dan_node_indices = data.get('gush_dan_node_indices', set())
@@ -424,7 +331,7 @@ class RouteOptimizer:
         search_parameters.local_search_metaheuristic = (
             routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
         )
-        search_parameters.time_limit.seconds = 300  # 5 minute time limit for iterative squeeze
+        search_parameters.time_limit.seconds = 60  # 60 second time limit for iterative squeeze
         
         # Solve
         logger.info("Solving VRP with OR-Tools...")
@@ -457,40 +364,12 @@ class RouteOptimizer:
             }
         
         # Extract solution
-        return self._extract_solution(routing, manager, solution, data, coords, locations, params,
-                                     customer_details=customer_details, original_indices=original_indices)
-
-    def _map_skipped_coords_to_route_nodes(self, skipped_coords: List[Tuple[float, float]], 
-                                           route_coords: List[Tuple[float, float]], 
-                                           full_route: List[int]) -> Set[int]:
-        """
-        Match skipped coordinates to node indices in the route using coordinate comparison.
-        
-        Args:
-            skipped_coords: List of (lat, lng) tuples that were skipped by directions API
-            route_coords: List of (lat, lng) tuples for the full route
-            full_route: List of node indices in the route
-            
-        Returns:
-            Set of node indices in full_route that should be removed
-        """
-        problematic_indices = set()
-        for skipped_coord in skipped_coords:
-            # Find matching node index in route by coordinate comparison
-            for route_idx, route_coord in enumerate(route_coords):
-                if (abs(route_coord[0] - skipped_coord[0]) < 0.0001 and 
-                    abs(route_coord[1] - skipped_coord[1]) < 0.0001):
-                    if route_idx < len(full_route):
-                        problematic_indices.add(full_route[route_idx])
-                    break
-        return problematic_indices
+        return self._extract_solution(routing, manager, solution, data, coords, locations, params)
 
     def _extract_solution(self, routing: pywrapcp.RoutingModel, manager: pywrapcp.RoutingIndexManager,
                          solution: pywrapcp.Assignment, data: Dict[str, Any], 
                          coords: List[Tuple[float, float]], locations: List[str],
-                         params: OptimizationParams,
-                         customer_details: Optional[List[Dict[str, Any]]] = None,
-                         original_indices: Optional[List[int]] = None) -> Solution:
+                         params: OptimizationParams) -> Solution:
         """
         Extract routes from OR-Tools solution and hydrate with ORS directions.
         
@@ -502,8 +381,6 @@ class RouteOptimizer:
             coords: List of (lat, lng) coordinates
             locations: List of location identifiers
             params: Optimization parameters
-            customer_details: Optional list of dicts with customer info (name, id, address) matching coords list
-            original_indices: Optional mapping from current index to original index (original_indices[i] = original index)
             
         Returns:
             Solution dictionary with routes, metrics, and unserved customers
@@ -512,8 +389,8 @@ class RouteOptimizer:
         route_metrics = []
         served_indices = set()
         
-        # Track customers removed during visualization phase
-        visualization_failed_customers = []
+        # Track coordinates that couldn't be routed (for UI warning)
+        all_skipped_coords = []
         
         # Determine truck type based on vehicle index
         num_small_trucks = len(data.get('small_truck_vehicle_indices', []))
@@ -541,98 +418,46 @@ class RouteOptimizer:
                 # Get route coordinates for directions API
                 route_coords = [coords[node] for node in full_route]
                 
-                # Visualization Phase Retry Logic
-                directions_data = None
-                final_route = full_route
-                removed_nodes_from_route = set()
-                
-                # First attempt: Get directions for full route
+                # Get geometry and precise metrics from ORS Directions API
                 directions_data = self.ors_handler.get_directions(route_coords)
-                
-                # Check if we need to retry with modified route
-                if directions_data is None or directions_data.get('skipped_coordinates'):
-                    # Identify problematic nodes
-                    problematic_node_indices = set()
-                    
-                    if directions_data is not None and directions_data.get('skipped_coordinates'):
-                        # Map skipped coordinates to node indices
-                        skipped_coords = directions_data.get('skipped_coordinates', [])
-                        problematic_node_indices = self._map_skipped_coords_to_route_nodes(
-                            skipped_coords, route_coords, full_route
-                        )
-                    else:
-                        # directions_data is None - mark all customer nodes as problematic
-                        problematic_node_indices = set(route_nodes)
-                    
-                    # Create modified route excluding problematic nodes (keep depot at start/end)
-                    modified_route = [data['depot']]
-                    for node in route_nodes:
-                        if node not in problematic_node_indices:
-                            modified_route.append(node)
-                    modified_route.append(data['depot'])
-                    
-                    # Only retry if we have at least depot + 1 customer
-                    if len(modified_route) > 2:
-                        modified_route_coords = [coords[node] for node in modified_route]
-                        logger.info(f"Vehicle {vehicle_id}: Retrying directions API with {len(modified_route) - 2} customers (removed {len(problematic_node_indices)} problematic)")
-                        
-                        # Retry with modified route
-                        retry_directions_data = self.ors_handler.get_directions(modified_route_coords)
-                        
-                        if retry_directions_data is not None and not retry_directions_data.get('skipped_coordinates'):
-                            # Success! Use modified route
-                            directions_data = retry_directions_data
-                            final_route = modified_route
-                            removed_nodes_from_route = problematic_node_indices
-                            logger.info(f"Vehicle {vehicle_id}: Retry successful, using modified route")
-                        else:
-                            # Retry also failed - fall back to spider web for original route
-                            logger.warning(f"Vehicle {vehicle_id}: Retry failed, using spider web fallback for original route")
-                            directions_data = None
-                            final_route = full_route
-                            removed_nodes_from_route = problematic_node_indices
-                    else:
-                        # Route too small after removal - use spider web for original route
-                        logger.warning(f"Vehicle {vehicle_id}: Route too small after removal, using spider web fallback")
-                        directions_data = None
-                        final_route = full_route
-                        removed_nodes_from_route = problematic_node_indices
-                
-                # Process directions data and calculate metrics
+
                 if directions_data is not None:
                     # Successful ORS response - use detailed geometry and metrics
                     geometry = directions_data['geometry']
                     distance = directions_data['distance']
                     duration = directions_data['duration']
                     
-                    # Add service time for each customer stop in final route
+                    # Collect any skipped coordinates (unroutable points)
+                    skipped_coords = directions_data.get('skipped_coordinates', [])
+                    if skipped_coords:
+                        all_skipped_coords.extend(skipped_coords)
+
+                    # Add service time for each customer stop
                     service_time = params.get('service_time_seconds', 300)
-                    customer_stops = [n for n in final_route if n != data['depot']]
-                    duration += len(customer_stops) * service_time
+                    duration += len(route_nodes) * service_time
 
                     # Format polylines for frontend (list of coordinate lists)
                     polylines = [geometry] if geometry else []
 
                 else:
                     # Spider Web Fallback: ORS failed, use straight-line geometry
-                    logger.warning(f"Vehicle {vehicle_id}: Using Spider Web fallback for route visualization.")
+                    logger.warning(f"ORS Limit Reached for Vehicle {vehicle_id}. Using Spider Web fallback.")
 
                     # Create straight-line geometry connecting stops in order
-                    geometry = [(coords[node][0], coords[node][1]) for node in final_route]  # (lat, lng) tuples
+                    geometry = [(coords[node][0], coords[node][1]) for node in full_route]  # (lat, lng) tuples
 
                     # Calculate metrics from internal matrices
                     total_distance = 0.0
                     total_duration = 0.0
-                    for i in range(len(final_route) - 1):
-                        from_node = final_route[i]
-                        to_node = final_route[i + 1]
+                    for i in range(len(full_route) - 1):
+                        from_node = full_route[i]
+                        to_node = full_route[i + 1]
                         total_distance += data['distance_matrix'][from_node][to_node]
                         total_duration += data['time_matrix'][from_node][to_node]
 
                     # Add service time for each customer stop
                     service_time = params.get('service_time_seconds', 300)
-                    customer_stops = [n for n in final_route if n != data['depot']]
-                    total_duration += len(customer_stops) * service_time
+                    total_duration += len(route_nodes) * service_time
 
                     # Use calculated values
                     distance = total_distance
@@ -641,35 +466,8 @@ class RouteOptimizer:
                     # Format polylines for frontend (list of coordinate lists)
                     polylines = [geometry]
 
-                # Track customers removed during visualization
-                if removed_nodes_from_route:
-                    for node_idx in removed_nodes_from_route:
-                        # Map to original index if available
-                        original_node_idx = node_idx
-                        if original_indices and node_idx < len(original_indices):
-                            original_node_idx = original_indices[node_idx]
-                        
-                        # Get customer details
-                        customer_info = {
-                            'original_index': original_node_idx,
-                            'name': f'Customer {original_node_idx}',
-                            'id': str(original_node_idx),
-                            'address': 'Unknown',
-                            'fail_reason': 'Visualization Failure: Unroutable during directions API call',
-                            'route_id': vehicle_id  # Track which route this customer was assigned to
-                        }
-                        
-                        if customer_details and node_idx < len(customer_details) and customer_details[node_idx]:
-                            customer_info['name'] = customer_details[node_idx].get('name', customer_info['name'])
-                            customer_info['id'] = customer_details[node_idx].get('id', customer_info['id'])
-                            customer_info['address'] = customer_details[node_idx].get('address', customer_info['address'])
-                        
-                        visualization_failed_customers.append(customer_info)
-                        # Remove from served_indices since they're being excluded
-                        served_indices.discard(node_idx)
-
                 # Store route as list (for backward compatibility) and add vehicle_type to metrics
-                routes.append(final_route)
+                routes.append(full_route)
                 route_metrics.append({
                     'distance': distance,
                     'duration': duration,
@@ -732,9 +530,20 @@ class RouteOptimizer:
         total_time = sum(r['duration'] for r in route_metrics)
         max_route_time = max((r['duration'] for r in route_metrics), default=0)
         
-        # Log visualization failures
-        if visualization_failed_customers:
-            logger.warning(f"Removed {len(visualization_failed_customers)} customers during visualization phase retry")
+        # Map skipped coordinates to node indices for UI display
+        skipped_node_indices = []
+        for skipped_coord in all_skipped_coords:
+            # Find the node index that matches this coordinate (approximate match due to float precision)
+            for node_idx, node_coord in enumerate(coords):
+                if (abs(node_coord[0] - skipped_coord[0]) < 0.0001 and 
+                    abs(node_coord[1] - skipped_coord[1]) < 0.0001):
+                    if node_idx != 0:  # Skip depot
+                        skipped_node_indices.append(node_idx)
+                    break
+        
+        # Log skipped customers
+        if skipped_node_indices:
+            logger.warning(f"Skipped {len(skipped_node_indices)} unroutable customers during directions fetch")
 
         return {
             'solution_found': True,
@@ -742,7 +551,7 @@ class RouteOptimizer:
             'route_metrics': route_metrics,
             'unserved': unserved_customers,
             'suggestions': suggestions,
-            'visualization_failed_customers': visualization_failed_customers,  # Customers removed during visualization retry
+            'skipped_customers': skipped_node_indices,  # Node indices of customers with unroutable coordinates
             'metrics': {
                 'total_distance': total_distance,
                 'total_time': total_time,
@@ -846,43 +655,6 @@ class RouteOptimizer:
                 })
         
         return routes, metrics_list, served
-
-    def _remap_solution_indices(self, solution: Solution, original_indices: List[int]) -> Solution:
-        """
-        Remap all node indices in the solution back to their original indices.
-        
-        Args:
-            solution: Solution dictionary with routes, unserved, etc.
-            original_indices: Mapping from current index to original index (original_indices[i] = original index)
-        
-        Returns:
-            Solution with all node indices remapped to original indices
-        """
-        remapped_solution = solution.copy()
-        
-        # Remap routes: each route is a list of node indices
-        if 'routes' in remapped_solution:
-            remapped_routes = []
-            for route in remapped_solution['routes']:
-                remapped_route = []
-                for node_idx in route:
-                    if node_idx < len(original_indices):
-                        remapped_route.append(original_indices[node_idx])
-                    else:
-                        # Index out of range (shouldn't happen, but defensive)
-                        remapped_route.append(node_idx)
-                remapped_routes.append(remapped_route)
-            remapped_solution['routes'] = remapped_routes
-        
-        # Remap unserved customers: each has an 'id' field
-        if 'unserved' in remapped_solution:
-            remapped_unserved = []
-            for u in remapped_solution['unserved']:
-                original_id = original_indices[u['id']] if u['id'] < len(original_indices) else u['id']
-                remapped_unserved.append({**u, 'id': original_id})
-            remapped_solution['unserved'] = remapped_unserved
-        
-        return remapped_solution
 
     def _generate_suggestions(self, unserved_customers, demands, params, coords, served_count, total_customers):
         """Generate optimization suggestions based on unserved customers."""
