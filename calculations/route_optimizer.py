@@ -392,6 +392,9 @@ class RouteOptimizer:
         # Track coordinates that couldn't be routed (for UI warning)
         all_skipped_coords = []
         
+        # Track node indices that were skipped during diagnostic (for UI table)
+        all_skipped_node_indices = []
+        
         # Determine truck type based on vehicle index
         num_small_trucks = len(data.get('small_truck_vehicle_indices', []))
         
@@ -440,102 +443,98 @@ class RouteOptimizer:
                     polylines = [geometry] if geometry else []
 
                 else:
-                    # Retry Logic: ORS failed, attempt to identify and skip problematic coordinates
-                    logger.warning(f"ORS Directions API failed for Vehicle {vehicle_id}, attempting retry with coordinate skip")
+                    # Point-by-Point Diagnostic Fallback: Test each segment individually
+                    logger.warning(f"ORS Directions API failed for Vehicle {vehicle_id}, attempting point-by-point diagnostic")
                     
-                    # Attempt to identify problematic coordinates by trying to get directions
-                    # with error handling to capture which coordinates fail
-                    retry_success = False
-                    skipped_node_indices = []
+                    # Initialize tracking for segment-by-segment testing
+                    successful_segments = []  # List of (geometry, distance, duration) tuples
+                    skipped_node_indices = []  # Node indices that failed
+                    total_distance = 0.0
+                    total_duration = 0.0
+                    service_time = params.get('service_time_seconds', 300)
                     
-                    # Try to identify bad coordinates by attempting a retry with error capture
-                    # We'll try removing coordinates that might be problematic
-                    # First, try to get any skipped coordinates from a direct retry attempt
-                    try:
-                        # Attempt a retry - the _get_directions_with_skip should have already tried
-                        # But we can attempt a more aggressive skip by trying smaller segments
-                        if len(route_coords) > 2:
-                            # Try removing the middle coordinates one at a time (excluding depot at start/end)
-                            # This is a heuristic approach when we can't parse the error
-                            logger.info(f"Attempting retry for Vehicle {vehicle_id} by testing coordinate segments")
+                    # Test each consecutive segment in the route
+                    for i in range(len(full_route) - 1):
+                        from_node = full_route[i]
+                        to_node = full_route[i + 1]
+                        from_coord = coords[from_node]
+                        to_coord = coords[to_node]
+                        
+                        # Test this segment (two coordinates)
+                        segment_coords = [from_coord, to_coord]
+                        segment_directions = self.ors_handler.get_directions(segment_coords)
+                        
+                        if segment_directions is not None:
+                            # Segment succeeded - add to successful segments
+                            seg_geometry = segment_directions.get('geometry', [])
+                            seg_distance = segment_directions.get('distance', 0.0)
+                            seg_duration = segment_directions.get('duration', 0.0)
                             
-                            # Try to get directions for segments, identifying which coordinates fail
-                            # Start with the full route minus one coordinate at a time
-                            for skip_idx in range(1, len(route_coords) - 1):  # Skip depot at start/end
-                                test_coords = route_coords[:skip_idx] + route_coords[skip_idx + 1:]
-                                test_route = full_route[:skip_idx] + full_route[skip_idx + 1:]
-                                
-                                test_directions = self.ors_handler.get_directions(test_coords)
-                                if test_directions is not None:
-                                    # Found a working route by skipping this coordinate
-                                    skipped_node = full_route[skip_idx]
-                                    if skipped_node != data['depot']:  # Don't skip depot
-                                        skipped_node_indices.append(skipped_node)
-                                        logger.info(f"Successfully retried Vehicle {vehicle_id} by skipping node {skipped_node}")
-                                        
-                                        # Use the successful geometry
-                                        geometry = test_directions['geometry']
-                                        distance = test_directions['distance']
-                                        duration = test_directions['duration']
-                                        
-                                        # Collect any additional skipped coordinates
-                                        test_skipped = test_directions.get('skipped_coordinates', [])
-                                        if test_skipped:
-                                            all_skipped_coords.extend(test_skipped)
-                                        
-                                        # Add service time (adjusted for skipped node)
-                                        service_time = params.get('service_time_seconds', 300)
-                                        duration += (len(route_nodes) - (1 if skipped_node in route_nodes else 0)) * service_time
-                                        
-                                        polylines = [geometry] if geometry else []
-                                        retry_success = True
-                                        break
+                            # Collect any skipped coordinates from this segment
+                            seg_skipped = segment_directions.get('skipped_coordinates', [])
+                            if seg_skipped:
+                                all_skipped_coords.extend(seg_skipped)
                             
-                            # If segment testing didn't work, try removing multiple coordinates
-                            if not retry_success and len(route_coords) > 3:
-                                # Try removing non-depot coordinates systematically
-                                for node_idx in route_nodes:  # Only test customer nodes, not depot
-                                    # Create route without this node
-                                    node_pos = full_route.index(node_idx)
-                                    if node_pos > 0 and node_pos < len(full_route) - 1:  # Not depot
-                                        test_coords = route_coords[:node_pos] + route_coords[node_pos + 1:]
-                                        test_route = full_route[:node_pos] + full_route[node_pos + 1:]
-                                        
-                                        test_directions = self.ors_handler.get_directions(test_coords)
-                                        if test_directions is not None:
-                                            skipped_node_indices.append(node_idx)
-                                            logger.info(f"Successfully retried Vehicle {vehicle_id} by skipping node {node_idx}")
-                                            
-                                            geometry = test_directions['geometry']
-                                            distance = test_directions['distance']
-                                            duration = test_directions['duration']
-                                            
-                                            test_skipped = test_directions.get('skipped_coordinates', [])
-                                            if test_skipped:
-                                                all_skipped_coords.extend(test_skipped)
-                                            
-                                            service_time = params.get('service_time_seconds', 300)
-                                            duration += (len(route_nodes) - 1) * service_time
-                                            
-                                            polylines = [geometry] if geometry else []
-                                            retry_success = True
-                                            break
-                    except Exception as e:
-                        logger.warning(f"Error during retry attempt for Vehicle {vehicle_id}: {str(e)}")
+                            successful_segments.append({
+                                'geometry': seg_geometry,
+                                'distance': seg_distance,
+                                'duration': seg_duration
+                            })
+                            total_distance += seg_distance
+                            total_duration += seg_duration
+                            
+                            logger.debug(f"Vehicle {vehicle_id}: Segment {i}->{i+1} (nodes {from_node}->{to_node}) succeeded")
+                        else:
+                            # Segment failed - identify the problematic coordinate (usually the destination)
+                            # The destination coordinate (to_node) is typically the one that fails
+                            if to_node != data['depot']:  # Don't mark depot as skipped
+                                if to_node not in skipped_node_indices:
+                                    skipped_node_indices.append(to_node)
+                                    # Also add to global list for final skipped_customers
+                                    if to_node not in all_skipped_node_indices:
+                                        all_skipped_node_indices.append(to_node)
+                                    skipped_coord = coords[to_node]
+                                    all_skipped_coords.append(skipped_coord)
+                                    logger.warning(f"Vehicle {vehicle_id}: Segment {i}->{i+1} failed, skipping unroutable node {to_node} (coordinate {skipped_coord})")
+                            
+                            # Also check if the source coordinate might be the issue (less common)
+                            # If this is the first segment and it fails, the source might be problematic
+                            if i == 0 and from_node != data['depot']:
+                                if from_node not in skipped_node_indices:
+                                    # Test if source coordinate alone is problematic
+                                    # This is a heuristic - if first segment fails, source might be bad
+                                    skipped_node_indices.append(from_node)
+                                    if from_node not in all_skipped_node_indices:
+                                        all_skipped_node_indices.append(from_node)
+                                    skipped_coord = coords[from_node]
+                                    all_skipped_coords.append(skipped_coord)
+                                    logger.warning(f"Vehicle {vehicle_id}: First segment failed, skipping unroutable source node {from_node} (coordinate {skipped_coord})")
                     
-                    # Map skipped node indices to coordinates for tracking
-                    # These will be mapped to node indices at the end of _extract_solution
-                    for skipped_node in skipped_node_indices:
-                        if skipped_node < len(coords):
-                            skipped_coord = coords[skipped_node]
-                            all_skipped_coords.append(skipped_coord)
-                            logger.info(f"Tracked skipped node {skipped_node} (coordinate {skipped_coord}) for Vehicle {vehicle_id}")
-                    
-                    if not retry_success:
-                        # Spider Web Fallback: Retry also failed, use straight-line geometry
-                        # Log the actual error type if available
-                        logger.warning(f"ORS Directions API retry failed for Vehicle {vehicle_id}. Using Spider Web fallback. "
-                                     f"This may indicate rate limiting (429) or multiple unroutable coordinates.")
+                    # Aggregate successful segments into combined geometry
+                    if successful_segments:
+                        # Combine all successful segment geometries
+                        combined_geometry = []
+                        for seg in successful_segments:
+                            seg_geom = seg['geometry']
+                            if seg_geom:
+                                # Skip first point of subsequent segments to avoid duplicates
+                                if combined_geometry and len(seg_geom) > 1:
+                                    combined_geometry.extend(seg_geom[1:])
+                                else:
+                                    combined_geometry.extend(seg_geom)
+                        
+                        # Use combined geometry and metrics
+                        geometry = combined_geometry if combined_geometry else [(coords[node][0], coords[node][1]) for node in full_route]
+                        distance = total_distance
+                        duration = total_duration + (len(route_nodes) - len(skipped_node_indices)) * service_time
+                        polylines = [geometry] if geometry else []
+                        
+                        logger.info(f"Vehicle {vehicle_id}: Successfully aggregated {len(successful_segments)}/{len(full_route)-1} segments. "
+                                  f"Skipped {len(skipped_node_indices)} unroutable nodes.")
+                    else:
+                        # All segments failed - fall back to spider-web
+                        logger.warning(f"Vehicle {vehicle_id}: All segments failed. Using Spider Web fallback. "
+                                     f"This may indicate rate limiting (429) or all coordinates are unroutable.")
                         
                         # Create straight-line geometry connecting stops in order
                         geometry = [(coords[node][0], coords[node][1]) for node in full_route]  # (lat, lng) tuples
@@ -550,7 +549,6 @@ class RouteOptimizer:
                             total_duration += data['time_matrix'][from_node][to_node]
                         
                         # Add service time for each customer stop
-                        service_time = params.get('service_time_seconds', 300)
                         total_duration += len(route_nodes) * service_time
                         
                         # Use calculated values
@@ -625,13 +623,16 @@ class RouteOptimizer:
         max_route_time = max((r['duration'] for r in route_metrics), default=0)
         
         # Map skipped coordinates to node indices for UI display
-        skipped_node_indices = []
+        # Start with directly tracked node indices from diagnostic
+        skipped_node_indices = list(all_skipped_node_indices)
+        
+        # Also map coordinates to node indices (for any coordinates added via other paths)
         for skipped_coord in all_skipped_coords:
             # Find the node index that matches this coordinate (approximate match due to float precision)
             for node_idx, node_coord in enumerate(coords):
                 if (abs(node_coord[0] - skipped_coord[0]) < 0.0001 and 
                     abs(node_coord[1] - skipped_coord[1]) < 0.0001):
-                    if node_idx != 0:  # Skip depot
+                    if node_idx != 0 and node_idx not in skipped_node_indices:  # Skip depot and avoid duplicates
                         skipped_node_indices.append(node_idx)
                     break
         

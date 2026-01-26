@@ -430,18 +430,52 @@ class ORSHandler:
                     # Remove the bad coordinate and retry
                     current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
                 else:
-                    # For 400 errors, if we can't parse the coordinate, try to get it from response
+                    # For 400 errors, if we can't parse the coordinate, try to get it from JSON response
                     if status_code == 400:
-                        # Try to extract coordinate index from response text
+                        # Try to extract coordinate index from JSON response message field
                         if hasattr(e, 'response') and e.response is not None:
-                            response_text = e.response.text if hasattr(e.response, 'text') else ''
-                            bad_idx = _parse_bad_coordinate_index(response_text)
-                            if bad_idx is not None and 0 <= bad_idx < len(current_coords):
-                                bad_coord = current_coords[bad_idx]
-                                logger.warning(f"Skipping unroutable coordinate at index {bad_idx} (from response): {bad_coord}")
-                                skipped_list.append(bad_coord)
-                                current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
-                                continue
+                            try:
+                                # Parse JSON response to get error message
+                                response_json = e.response.json()
+                                error_message = None
+                                
+                                # Extract message from JSON structure: {"error": {"message": "..."}}
+                                if isinstance(response_json, dict):
+                                    if 'error' in response_json and isinstance(response_json['error'], dict):
+                                        error_message = response_json['error'].get('message', '')
+                                    elif 'message' in response_json:
+                                        error_message = response_json['message']
+                                
+                                # If we got a message, try to parse coordinate index from it
+                                if error_message:
+                                    bad_idx = _parse_bad_coordinate_index(error_message)
+                                    if bad_idx is not None and 0 <= bad_idx < len(current_coords):
+                                        bad_coord = current_coords[bad_idx]
+                                        logger.warning(f"Skipping unroutable coordinate at index {bad_idx} (from JSON message): {bad_coord}")
+                                        skipped_list.append(bad_coord)
+                                        current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
+                                        continue
+                                
+                                # Fallback: try parsing from raw response text
+                                response_text = e.response.text if hasattr(e.response, 'text') else ''
+                                bad_idx = _parse_bad_coordinate_index(response_text)
+                                if bad_idx is not None and 0 <= bad_idx < len(current_coords):
+                                    bad_coord = current_coords[bad_idx]
+                                    logger.warning(f"Skipping unroutable coordinate at index {bad_idx} (from response text): {bad_coord}")
+                                    skipped_list.append(bad_coord)
+                                    current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
+                                    continue
+                            except (ValueError, KeyError, AttributeError) as json_err:
+                                # JSON parsing failed, try raw text as fallback
+                                logger.debug(f"Could not parse JSON response: {json_err}")
+                                response_text = e.response.text if hasattr(e.response, 'text') else ''
+                                bad_idx = _parse_bad_coordinate_index(response_text)
+                                if bad_idx is not None and 0 <= bad_idx < len(current_coords):
+                                    bad_coord = current_coords[bad_idx]
+                                    logger.warning(f"Skipping unroutable coordinate at index {bad_idx} (from response text fallback): {bad_coord}")
+                                    skipped_list.append(bad_coord)
+                                    current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
+                                    continue
                     
                     # Cannot parse error or index out of range - give up on this chunk
                     if status_code == 429:

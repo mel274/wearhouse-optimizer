@@ -163,8 +163,8 @@ class MapBuilder:
                             
                             # Check if this node is skipped (unroutable coordinate)
                             if curr_node_idx in skipped_indices:
-                                # Draw error marker for skipped customer
-                                self._add_error_marker(m, cust, curr_coords)
+                                # Draw error marker for skipped customer (with route color)
+                                self._add_error_marker(m, cust, curr_coords, color)
                             else:
                                 # Draw normal numbered stop marker
                                 stop_counter += 1
@@ -316,8 +316,15 @@ class MapBuilder:
             tooltip=f"Unserved: {customer.get('שם לקוח', 'N/A')}"
         ).add_to(m)
 
-    def _add_error_marker(self, m, customer, coords):
-        """Helper to add an error marker for skipped customers (unroutable coordinates)."""
+    def _add_error_marker(self, m, customer, coords, color='red'):
+        """Helper to add an error marker for skipped customers (unroutable coordinates).
+        
+        Args:
+            m: Folium map object
+            customer: Customer data row
+            coords: Coordinate tuple (lat, lng)
+            color: Route color to use for the marker (defaults to 'red' for backward compatibility)
+        """
         # Use Customer Force (force_volume)
         vol = customer.get('force_volume', 0)
 
@@ -329,9 +336,18 @@ class MapBuilder:
         </div>
         """
         
+        # Using DivIcon to create a colored circle marker with "X" (matching stop marker style)
         folium.Marker(
             location=coords,
             popup=folium.Popup(popup_html, max_width=300),
-            icon=folium.Icon(color='red', icon='times', prefix='fa'),
+            icon=folium.DivIcon(
+                html=f'<div style="background-color: {color}; color: white; '
+                     f'border-radius: 50%; width: 24px; height: 24px; '
+                     f'display: flex; align-items: center; justify-content: center; '
+                     f'font-weight: bold; font-size: 11px; border: 2px solid white; '
+                     f'box-shadow: 2px 2px 5px rgba(0,0,0,0.3); text-shadow: 0px 0px 2px #000;">X</div>',
+                icon_size=(24, 24),
+                icon_anchor=(12, 12)
+            ),
             tooltip="Unroutable Coordinate"
         ).add_to(m)
