@@ -256,29 +256,28 @@ class RouteOptimizer:
             return int(total_time)
         
         time_callback_index = routing.RegisterTransitCallback(time_callback)
-        
-        # Add time dimension with soft constraints (elastic walls) - 48 hour horizon
-        # Allows solver to exceed time limits with penalties
-        # 1. Add the dimension (returns bool)
+
+        # Master Route Planning: Use SOFT time constraints
+        # Master routes are territory assignments - they group customers into logical routes.
+        # The actual time constraint enforcement happens in simulation when testing daily sub-routes.
+        # Using soft constraints here allows the solver to find valid territory assignments
+        # even when the theoretical "all customers visited" time exceeds the shift limit.
         routing.AddDimension(
             time_callback_index,
             0,  # slack
-            172800,  # horizon (48 hours for soft constraints)
+            int(data['max_shift_seconds'] * 1.2),  # 120% of shift limit (soft constraint ceiling)
             True,  # fix_start_cumul_to_zero
             "Time"
         )
 
-        # 2. Retrieve the dimension object explicitly
+        # Apply soft upper bound for time - penalize exceeding max_shift_seconds
         time_dimension = routing.GetDimensionOrDie("Time")
-
-        # Add soft upper bounds for time (elastic constraints)
         for vehicle_id in range(vehicle_limit):
             index = routing.End(vehicle_id)
             time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 1000)
 
-        # Get the Time dimension and set global span cost to balance workloads across drivers
-        time_dim = routing.GetDimensionOrDie("Time")
-        time_dim.SetGlobalSpanCostCoefficient(100)
+        # Set global span cost to balance workloads across drivers
+        time_dimension.SetGlobalSpanCostCoefficient(100)
         
         # Demand callback - returns the scaled volume demand for each node
         def demand_callback(from_index: int) -> int:

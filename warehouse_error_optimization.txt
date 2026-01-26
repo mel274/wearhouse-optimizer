@@ -1,0 +1,637 @@
+Windows PowerShell
+Copyright (C) Microsoft Corporation. All rights reserved.
+
+Install the latest PowerShell for new features and improvements! https://aka.ms/PSWindows
+
+PS C:\Users\roike> cd .\Desktop\wearhouse-optimizer\
+PS C:\Users\roike\Desktop\wearhouse-optimizer> venv\scripts\activate
+(venv) PS C:\Users\roike\Desktop\wearhouse-optimizer> streamlit run app.py
+
+  You can now view your Streamlit app in your browser.
+
+  Local URL: http://localhost:8501
+  Network URL: http://192.168.0.102:8501
+
+INFO:geo_service:Loaded 444 cached geocoding entries
+INFO:geo_service:Loaded 444 cached geocoding entries
+INFO:shared.utils:Starting Hebrew file encoding validation
+INFO:shared.utils:Starting Hebrew file encoding validation
+INFO:shared.utils:Successfully read Excel file with 77885 rows
+INFO:shared.utils:File validation completed successfully. Found columns: ['תאריך\xa0אספקה', "מס'\xa0לקוח", 'שם\xa0לקוח', 'כתובת ', 'מניפסט', 'מספר\xa0תעודה', 'שורה', 'פריט', 'נפח פריט (מטר מעוקב)', 'מידות פריט', 'שם\xa0פריט', 'כמות', 'כמות.1', 'תאור\xa0סיבה', 'תאריך\xa0הכנה', 'קו', 'שם\xa0קו', 'יציאה', 'נהג', 'שם\xa0נהג', 'סוג\xa0תעודה', 'Unnamed: 21']
+INFO:data_manager:Volume column 'נפח פריט (מטר מעוקב)' found. Calculating total volume.
+INFO:data_manager:Loaded 77885 rows from file
+INFO:shared.utils:Successfully read Excel file with 77885 rows
+INFO:shared.utils:File validation completed successfully. Found columns: ['תאריך\xa0אספקה', "מס'\xa0לקוח", 'שם\xa0לקוח', 'כתובת ', 'מניפסט', 'מספר\xa0תעודה', 'שורה', 'פריט', 'נפח פריט (מטר מעוקב)', 'מידות פריט', 'שם\xa0פריט', 'כמות', 'כמות.1', 'תאור\xa0סיבה', 'תאריך\xa0הכנה', 'קו', 'שם\xa0קו', 'יציאה', 'נהג', 'שם\xa0נהג', 'סוג\xa0תעודה', 'Unnamed: 21']
+INFO:data_manager:Volume column 'נפח פריט (מטר מעוקב)' found. Calculating total volume.
+INFO:data_manager:Loaded 77885 rows from file
+INFO:data_manager:Created daily order aggregation: 22763 customer-date pairs
+INFO:data_manager:Calculated force metrics for 723 customers using buffer=1.0 over total_days=118
+INFO:data_manager:Aggregated 77885 items to 723 customers using buffer=1.0 force over total_days=118
+INFO:calculations.ors:Matrix operations using local Docker ORS instance: http://localhost:8080/ors/v2
+INFO:calculations.ors:Directions operations using cloud ORS API: https://api.openrouteservice.org
+INFO:data_manager:Recalculating force: 22763 customer-date pairs
+INFO:data_manager:Recalculated force metrics for 723 customers using buffer=1.0 over total_days=118
+INFO:data_manager:Updated customer force metrics with buffer=1.0
+INFO:data_manager:Loaded 476 master locations from assets/garages.xlsx
+ERROR:geo_service:All geocoding services failed for address: 'רח היצירה 13, עפולה'
+ERROR:geo_service:All geocoding services failed for address: 'רח השיש 36, מפרץ חיפה'
+ERROR:geo_service:All geocoding services failed for address: 'רח שטורמן 4, בית שאן'
+ERROR:geo_service:All geocoding services failed for address: 'שד הגנה 23, חיפה'
+ERROR:geo_service:All geocoding services failed for address: 'NULL, כפר נחף'
+ERROR:geo_service:All geocoding services failed for address: 'יד חרווצים 8, נתניה'
+ERROR:geo_service:All geocoding services failed for address: 'רח בצלאל 6, חולון'
+ERROR:geo_service:All geocoding services failed for address: 'גבוטנסקי 65, פתח תקוה'
+ERROR:geo_service:All geocoding services failed for address: 'רח היצירה 12, רמת גן'
+ERROR:geo_service:All geocoding services failed for address: 'רח כורזין 5, גבעתיים'
+ERROR:geo_service:All geocoding services failed for address: 'בר כוכבא 70, פת'
+ERROR:geo_service:All geocoding services failed for address: 'הכדר 4, נתניה'
+ERROR:geo_service:All geocoding services failed for address: 'רח הס 27, הרצליה'
+ERROR:geo_service:All geocoding services failed for address: 'שד לוי אשכול 1, חולון'
+ERROR:geo_service:All geocoding services failed for address: 'הכדר 4, נתניה'
+INFO:data_manager:Geocoding completed: 476 master locations used, 473 API calls made
+INFO:data_manager:Added customer 'א.ב.שוגן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי בזק בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אביב הלוי-רחובות' to detected file - found via API
+INFO:data_manager:Added customer 'קוסטנדי גנטוס ובניו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'הפנצ'רייה של הקריה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'נגררי אבו מוך שיווק בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טופ ויילס ספ בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'רוחצאומט  1986 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'הראל פנצ'ריה ושטיפת רכבים' to detected file - found via API
+INFO:data_manager:Added customer 'איי.ג'י.אס.אגרו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוחמד מחמוד מוסא הובלות' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך אס' to detected file - found via API
+INFO:data_manager:Added customer 'אוטו פרו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי כהן מירו' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית  ורחיצת חמודי' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי גאד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי פרג 2024 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חצב נציגויות בע"מ- ראש פינה' to detected file - found via API
+INFO:data_manager:Added customer 'ראמי שירותי רכב' to detected file - found via API
+INFO:data_manager:Added customer 'אלון יעקב הובלות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'סופר צמיג חדרה' to detected file - found via API
+INFO:data_manager:Added customer 'מגאדלה עאיד מוסטפה' to detected file - found via API
+INFO:data_manager:Added customer 'פופאי יבוא ושיווק צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצריה אלעין' to detected file - found via API
+INFO:data_manager:Added customer 'מחמוד.ע.אלחלים ובניו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי יוסף בע"מ  (סניף יהוד)' to detected file - found via API
+INFO:data_manager:Added customer 'הובלות אבו פנה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'סאלח אבו עביד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מגדל החרמון בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'קרדוש נצרת בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'שירותי אוטובוסים מאוחדים נצרת יבוא בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך עטיה יהודה' to detected file - found via API
+INFO:data_manager:Added customer 'הפנצ'ריה של חיים שחר ביתן' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עלוש אברהים' to detected file - found via API
+INFO:data_manager:Added customer 'מימון ובניו' to detected file - found via API
+INFO:data_manager:Added customer 'מילואות-ת.דלק ושרותים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מרכז שירות נ.ג בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ש.ר צמיגים ומצברים שובל אביב' to detected file - found via API
+INFO:data_manager:Added customer 'קציר הצפון - הובלות סחר קש וחציר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'שטיפת רכב הלבנוני' to detected file - found via API
+INFO:data_manager:Added customer 'החברה הצפונית לפינוי אשפה-פרץ חיים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית כפר כנא' to detected file - found via API
+INFO:data_manager:Added customer 'טייסון צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עוסמאן בן שרה הובלות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מובילי נטופה מ.ע.ן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ידידה סחר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חצב נציגויות בע"מ - סניף צימו' to detected file - found via API
+INFO:data_manager:Added customer 'בני משה ביטון ד. א. י. ש. בע"מ- בית שאן' to detected file - found via API
+INFO:data_manager:Added customer 'אחים חרפאני בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי כרמל בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ח.קונפינו יבוא צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עוז' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מצה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רונן יאיר' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך אבו חפיזה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי O.K קתחודה' to detected file - found via API
+INFO:data_manager:Added customer 'קרית הרכב ירכא בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיג על רמה' to detected file - found via API
+INFO:data_manager:Added customer 'עסלי רפקי ובניו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עמית שרות התקר 2006 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עדנאן מטר מכירת צמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'ע.מטר ואחיו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ברק צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית הצפון' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רמזי ובניו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך המרכז החדש בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'א.א.שרותי רכב עפולה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית לונה 2010 מוראד היתם' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך חלוצי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית השלום' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי פרויד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'שרותי רכב מיכאלי יעקב ובניו' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית חניון משה' to detected file - found via API
+INFO:data_manager:Added customer 'אריק צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טיירדיל בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עותמאן חסן ובניו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית עבאדי' to detected file - found via API
+INFO:data_manager:Added customer 'ש.אחים זוהר לרכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית א.ר.ש' to detected file - found via API
+INFO:data_manager:Added customer 'ג.ש.ר גולן שירותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'אזולאי בית משה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'א.ס.ק.ר הובלות ושיווק דלקים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מרכז שירות א.ברק בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טייר ברהם' to detected file - found via API
+INFO:data_manager:Added customer 'הסעות סולימאן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך חושי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'גדי גפן הובלות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פ.מוזלבט חליל' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך קיבוץ כנרת' to detected file - found via API
+INFO:data_manager:Added customer 'צוקים ר. 2015 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'בית הג'נטים והצמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי כבול' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית ג'מאל' to detected file - found via API
+INFO:data_manager:Added customer 'חסון ולאא צמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ויסאם רייא' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עבד אלחלים' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי הצפון' to detected file - found via API
+INFO:data_manager:Added customer 'א.ד.יבוא ושיווק צמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'המוביל שרותי מוסכים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מ.ח.צמיגי נהריה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'א.ביטון שירותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצרית אבו גרור' to detected file - found via API
+INFO:data_manager:Added customer 'סופר טראק י.ש. צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רוני בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מג'ק' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אבו עזיז' to detected file - found via API
+INFO:data_manager:Added customer 'אחים נעים יבוא ושיווק צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי שקור' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ענאן חילו' to detected file - found via API
+INFO:data_manager:Added customer 'טייר 4 יו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'המאסטרו א.ע יבוא ושיווק בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך לחמי' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית רביע אבו חפיזה' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אדמונד בגולן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מ.ח.שדרוגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי יוסי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך סגול כרמיאל בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית הגולן' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית וצמיגי אבו אלסאלח' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי נעמן 2007' to detected file - found via API
+INFO:data_manager:Added customer 'אביב סוכנויות גלגלים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'י.ו.צמיגים ושטיפה' to detected file - found via API
+INFO:data_manager:Added customer 'חמודי מזגנים' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך מזרע א.ע.בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית זערורה' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית עבד עבוד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי זעיר זעיר' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי יבור' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך רמת מגשימים' to detected file - found via API
+INFO:data_manager:Added customer 'א.ס.עבדולהאדי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'קיה צפון אילן נחימוב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'נ.א. צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'נצח תור בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'המאסטרו א.ע.ייבוא ושיווק בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי הצפון-ראש פינה' to detected file - found via API
+INFO:data_manager:Added customer 'מוחמד שאמי' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אכסאל שלבי אחמד' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית הגבעה' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית מעיליא-ח'ורי' to detected file - found via API
+INFO:data_manager:Added customer 'טייר פרו תל חנן' to detected file - found via API
+INFO:data_manager:Added customer 'ויסאם זאייד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אלבר' to detected file - found via API
+INFO:data_manager:Added customer 'צדוק אחזקה ושירותים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer '4 ווילס 4 יו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אבו חסן' to detected file - found via API
+INFO:data_manager:Added customer 'ליאור הכל לרכב' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי האלוף' to detected file - found via API
+INFO:data_manager:Added customer 'אלמאז צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עודה מאמון צמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך ופנצריית יוסף פדול' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עודה' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ראמה ניקולא' to detected file - found via API
+INFO:data_manager:Added customer 'א.ס.י אמפיר סחר ויבוא בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי יוסף אור יהודה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צימו צ'ק פוסט 1990' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית עדנאן' to detected file - found via API
+INFO:data_manager:Added customer 'א.אמיר סחר והפצה צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית אדיב אבו עבדי' to detected file - found via API
+INFO:data_manager:Added customer 'טכנו מנוע צפון בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך נרקיס שרון את רוני בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'TYRE SPEED' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-כל מוביל חיפה' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-צ'מפיון פ"ת' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-דנאל מוטורס כ"ס' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-הילוך שישי ראשל"צ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי כרמל-קיסריה' to detected file - found via API
+INFO:data_manager:Added customer 'קיבוץ משמר העמק אגש"ח בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי רייטל גרופ-בני ברק' to detected file - found via API
+INFO:data_manager:Added customer 'סבאג פאוזי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טייר 4 יו בע"מ-קרע' to detected file - found via API
+INFO:data_manager:Added customer 'עולם הרכב' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רמת חן' to detected file - found via API
+INFO:data_manager:Added customer 'טייר פוינט' to detected file - found via API
+INFO:data_manager:Added customer 'הורן שירותי מוסך בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ויאם שיווק צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אירופה' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אושיק' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ויתקין' to detected file - found via API
+INFO:data_manager:Added customer 'ברק שירותי רחיצה' to detected file - found via API
+INFO:data_manager:Added customer 'פרג אוניברסיטת הצמיג-סניף 3' to detected file - found via API
+INFO:data_manager:Added customer 'פנצרית האחים' to detected file - found via API
+INFO:data_manager:Added customer 'אבירון אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'מוטוהייטק' to detected file - found via API
+INFO:data_manager:Added customer 'י.ק.מוטוקלאס בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'רפידו מוסך אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'אלף אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'ה.מ.ישראל בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'המגרש' to detected file - found via API
+INFO:data_manager:Added customer 'יאב' to detected file - found via API
+INFO:data_manager:Added customer 'ניר ד"ר סייקל' to detected file - found via API
+INFO:data_manager:Added customer 'סוזוקה ע.פ בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מ.ג מאיר אקסטרים ונגררים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'YD MOTO' to detected file - found via API
+INFO:data_manager:Added customer 'יוני אופנועים (ירושלים)' to detected file - found via API
+INFO:data_manager:Added customer 'דראג אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'מיסטר מוטו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ביג בן- ביג' to detected file - found via API
+INFO:data_manager:Added customer 'מומנט אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך רמזור בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ד.מ.ד אופנועים (אדק'דק)' to detected file - found via API
+INFO:data_manager:Added customer 'רק אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'רועי מוטור' to detected file - found via API
+INFO:data_manager:Added customer 'ניר מלול - סופר מוטו צפון' to detected file - found via API
+INFO:data_manager:Added customer 'ש.ח. אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'אופנועי האחים' to detected file - found via API
+INFO:data_manager:Added customer 'דור אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'בולי בייק' to detected file - found via API
+INFO:data_manager:Added customer 'עמרם אופנועים וחלקים' to detected file - found via API
+INFO:data_manager:Added customer 'מלכי שרותים טכניים' to detected file - found via API
+INFO:data_manager:Added customer 'ברווז מוטורס' to detected file - found via API
+INFO:data_manager:Added customer 'אדיר אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך HOLESHOT' to detected file - found via API
+INFO:data_manager:Added customer 'מירו קרוס' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך הקטנוע רוזנר' to detected file - found via API
+INFO:data_manager:Added customer 'אקסטרים מוטוספורט 1 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'אופנו בייק סנטר' to detected file - found via API
+INFO:data_manager:Added customer 'טויוטה אוטופיה' to detected file - found via API
+INFO:data_manager:Added customer 'צ'מפיון ירושלים' to detected file - found via API
+INFO:data_manager:Added customer 'התותח אפנועים' to detected file - found via API
+INFO:data_manager:Added customer 'טופ אר.אס בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טופ שופ אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'שחם בוטיק אופנועים' to detected file - found via API
+INFO:data_manager:Added customer 'ברמ מוטו סנטר' to detected file - found via API
+INFO:data_manager:Added customer 'MOTO MS' to detected file - found via API
+INFO:data_manager:Added customer 'ברם מוטו סנטר' to detected file - found via API
+INFO:data_manager:Added customer 'אופנוטרייד' to detected file - found via API
+INFO:data_manager:Added customer 'ג'ורג'יניו מוטורס' to detected file - found via API
+INFO:data_manager:Added customer 'המכונאי' to detected file - found via API
+INFO:data_manager:Added customer 'מוטור שופ' to detected file - found via API
+INFO:data_manager:Added customer 'ביסאן קסטרו מוטורס' to detected file - found via API
+INFO:data_manager:Added customer 'די אנד אס מוטורס' to detected file - found via API
+INFO:data_manager:Added customer 'א.ע. שופ מוטורס 2022 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מ.ג. יגמור מוטורס' to detected file - found via API
+INFO:data_manager:Added customer 'אר מוטור' to detected file - found via API
+INFO:data_manager:Added customer 'קוגול יוניטרייד מחסן לוד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי גלגלי העיר' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מגן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'זיתוני גבעתיים' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי טירה 1990 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מושון בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'י.ד.צמיגי טופ (2011) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי טיפ טופ יפו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי העיר ראשון בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מרכז הצמיג ש.י. בע"מ-הסדנאות' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית האור-רמת חן' to detected file - found via API
+INFO:data_manager:Added customer 'סס טופ צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עמיאל שיווק צמיגים בראשל"צ בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רביע' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מוריס בית עובד' to detected file - found via API
+INFO:data_manager:Added customer 'עודד רייכמן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עוזנת בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מוריס' to detected file - found via API
+INFO:data_manager:Added customer 'חיים וקנין שרותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אביעד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי הירש רחובות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי בר רחובות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'יו.אס.אי.אי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'דרך צלחה שירותי הובלה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי הרשת שי אדר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'דרייב קלין בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-חיפה' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-ב"ש' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-ראשל"צ' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-אשדוד' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-בילו' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-ירושלים' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-נצרת' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-סינרמה' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי המהיר - יעקב' to detected file - found via API
+INFO:data_manager:Added customer 'לה גראג' בר-קפה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית עמיאל אשדוד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'שלב 1945 הובלות (2004) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית הבילוי"ים' to detected file - found via API
+INFO:data_manager:Added customer 'פאוור - טייר נס ציונה' to detected file - found via API
+INFO:data_manager:Added customer 'מאיר מרכזי שירות שותפות מוגבלת' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית הדרום בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי דרור שילת בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עמוס אשדוד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי 2000' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-כ"ס' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מקס שילת בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-סגולה' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-בית שמש' to detected file - found via API
+INFO:data_manager:Added customer 'טייר מאסטר ב.ג בע"מ-ליסינג' to detected file - found via API
+INFO:data_manager:Added customer 'ח.חויו ובניו-סביון' to detected file - found via API
+INFO:data_manager:Added customer 'עמיאל שיווק-כלמוביל פ"ת' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אור' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי המלך שלמה' to detected file - found via API
+INFO:data_manager:Added customer 'י.מ.צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-רגבה' to detected file - found via API
+INFO:data_manager:Added customer 'חצב סחר (1993) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי זמר פלוס' to detected file - found via API
+INFO:data_manager:Added customer 'רחיצה וצמיגים  עבד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ורד א.ד 2002 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך י.פ. העוגן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ששון' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי חנוכה' to detected file - found via API
+INFO:data_manager:Added customer 'מולטי ריטייל גרופ-מבקעים' to detected file - found via API
+INFO:data_manager:Added customer 'רן-שי שרותי הסעות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אחים ברנס אשדוד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'א.א בית הצמיג' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מירן' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אסף רחובות' to detected file - found via API
+INFO:data_manager:Added customer 'אבצמיג הנמל אשדוד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי שמעון כחלון בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מלי-מוסך 2001 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'גרין טייר' to detected file - found via API
+INFO:data_manager:Added customer 'ת.ג.ח' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי צ'רלי חילו' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ליגד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מקס שילת-סניף חדש' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי טל' to detected file - found via API
+INFO:data_manager:Added customer 'TYRE CAR ת" א' to detected file - found via API
+INFO:data_manager:Added customer 'אנטון חנניה-כוזרי' to detected file - found via API
+INFO:data_manager:Added customer 'נחלים טופ טייר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי קחלון' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי המהיר באר יעקב' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ג'ינג'י בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מרכז הפרונט צמיגי התחנה' to detected file - found via API
+INFO:data_manager:Added customer 'BEST DRIVE' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך עלי עבד אלקאדר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מלאכי דארין' to detected file - found via API
+INFO:data_manager:Added customer 'טכנולוגיות מרוצים (2002) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי מזור (אבן יהודה) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ה.ג.ר המוביל גיבלי ראובן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי החברים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'איתן הובלות ציוד כבד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'אל על - נתיבי אוויר לישראל' to detected file - found via API
+INFO:data_manager:Added customer 'מובילי הורדים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טיירו נעים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'סאלח חמיס ובניו בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'יסמין הובלות ושיווק דבוריה בע' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ג'ו חולון' to detected file - found via API
+INFO:data_manager:Added customer 'שירון(1989)י.ש.צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'תעשיות בית אל זכרון יעקב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי יוסי אוזן' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי המילניום מסחר ושר' בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'יענקלה איתן גורן לחקלאי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מ.מחסני צמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חברת י.א. אשכנזי הובלות מחצב ועבודות עפר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי הפלד' to detected file - found via API
+INFO:data_manager:Added customer 'מאיר דהן הובלות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך ונטורה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי יבנה-זמורות הגפן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טייר סנטר ישיר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'היפר צמיג בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית טיפ טופ בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'הלסן חברה ליצור ושווק בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי לוד' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית יוסי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'אלעבידי למסחר ודלקים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חברת צמיגי אלסלאמה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מטיילי האחים דדון בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חברת אלמסתקבל אלמשרק לצמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי דוידו מוטי' to detected file - found via API
+INFO:data_manager:Added customer 'אבי (ד.ע) שירותי רכב 24 שעות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'גי'.אר.אם סחר וצמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית טיפ טופ בע"מ-עטרות' to detected file - found via API
+INFO:data_manager:Added customer 'ג'אזי שהאב' to detected file - found via API
+INFO:data_manager:Added customer 'פסגת הצמיג' to detected file - found via API
+INFO:data_manager:Added customer 'ש.מ.אלנביל לצמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ליאור 2020 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך הבירה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'טיפ טופ טיירס עטרות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי שלומי נאסה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי הראל בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'א.נ.ש סחר כללי' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך שרון מועלם' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי בן כליפה' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רונדו מישור אדומים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אבו גוש' to detected file - found via API
+INFO:data_manager:Added customer 'זכי ואלון צמיגים ושרותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מקור הצמיג והפרונט בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צדיק צמיגים 1998 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי האחים ברבי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'הפנצ'ריה הכתומה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ליבוביץ מרכז הצמיגים בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריה אלקובי' to detected file - found via API
+INFO:data_manager:Added customer 'תמיר מרכז הצמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'אלנור תובלה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי באר שבע' to detected file - found via API
+INFO:data_manager:Added customer 'צמיג ותקר 89' to detected file - found via API
+INFO:data_manager:Added customer 'טיולי נווה המדבר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי א.ברבי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חלפי השוק אוטו אאוטלט בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'אשר צמיגים אלקובי' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי רפי מלכה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך קלדרון באר-שבע בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מובילי צפון הנגב (בן זקן) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'מיי טיירס בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'רית טויטו דוד' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי קידר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'חלפי השוק נתיבות' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי ג'נסיס בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ח.חויו ובניו בע"מ (תל אביב)' to detected file - found via API
+INFO:data_manager:Added customer 'ספייס קאר' to detected file - found via API
+INFO:data_manager:Added customer 'סולי אספקה טכנית ושירותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'וחידי רמלה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ל.א פיקס שירותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ח.חויו ובניו בע"מ -הרצליה' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי עומרי כחלון' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אנטון חנניה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי סופר טייר קריית גת בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אנטון חנניה בע"מ -רחובות' to detected file - found via API
+INFO:data_manager:Added customer 'א.ש. עדן בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי המחלף בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'ברק בלס צמיגי יהוד שבזי 2' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית וספי נמר' to detected file - found via API
+INFO:data_manager:Added customer 'מוטי צמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'ד.א אסיה תעשיות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית רבנו 148 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי חביב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'הפנצ'ריה נ"צ' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך אריאל' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי דרך אשקלון' to detected file - found via API
+INFO:data_manager:Added customer 'חצב ניציגויות  בע"מ - נס ציונה' to detected file - found via API
+INFO:data_manager:Added customer 'חצב נציגויות בע"מ- חולון' to detected file - found via API
+INFO:data_manager:Added customer 'חצב נציגויות בע"מ- פתח תקווה' to detected file - found via API
+INFO:data_manager:Added customer 'חצב נציגיויות בע"מ-כנות' to detected file - found via API
+INFO:data_manager:Added customer 'גיא ס.ל. שינוע בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'א.נ איתם בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'נפתלי ברוורמן תובלה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'אלת הצמיגים סחר והשקעות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית הגל' to detected file - found via API
+INFO:data_manager:Added customer 'מוסכי ורד בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אדל' to detected file - found via API
+INFO:data_manager:Added customer 'שטיפת האושר פנצ'ריה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי שחר 2019 בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'איובי אברהם עב' עפר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'בן גנון' to detected file - found via API
+INFO:data_manager:Added customer 'טייר סנטר - פ"ת' to detected file - found via API
+INFO:data_manager:Added customer 'טייר סנטר - רמת אביב' to detected file - found via API
+INFO:data_manager:Added customer 'גור עוז טכנולוגיות רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'י. סגולה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי המוביל נור עיסאוי בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי איתן' to detected file - found via API
+INFO:data_manager:Added customer 'א.ס רכינות השפלה בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי באר שבע בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית העיר בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'שירות צמיגים א.סלי' to detected file - found via API
+INFO:data_manager:Added customer 'מוקד ארז דרום (2002) בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אמצע הדרך' to detected file - found via API
+INFO:data_manager:Added customer 'שירות לצמיגים מייק בן יוסף' to detected file - found via API
+INFO:data_manager:Added customer 'מנופי הרצל בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי אחים עבד' to detected file - found via API
+INFO:data_manager:Added customer 'מוסך ה' עצמאות בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'בן בן צמיגים' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית אחמד תורקי' to detected file - found via API
+INFO:data_manager:Added customer 'דר' פנצ'ר' to detected file - found via API
+INFO:data_manager:Added customer 'י.ק. תחבורה פרימיום בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'צמיגי תמיר' to detected file - found via API
+INFO:data_manager:Added customer 'סטאר שירותי רכב בע"מ' to detected file - found via API
+INFO:data_manager:Added customer 'עותמאן חסן ובניו בע"מ- סניף גלילות' to detected file - found via API
+INFO:data_manager:Added customer 'פנצ'ריית רמלוד' to detected file - found via API
+INFO:data_manager:Added customer 'חצב נציגויות בע"מ -ורד' to detected file - found via API
+INFO:data_manager:Saved 483 detected locations to assets/api_detected_locations.xlsx
+INFO:calculations.ors:Matrix operations using local Docker ORS instance: http://localhost:8080/ors/v2
+INFO:calculations.ors:Directions operations using cloud ORS API: https://api.openrouteservice.org
+INFO:data_manager:Recalculating force: 22763 customer-date pairs
+INFO:data_manager:Recalculated force metrics for 723 customers using buffer=1.0 over total_days=118
+INFO:data_manager:Updated customer force metrics with buffer=1.0
+INFO:calculations.fleet_service:Extracted capacities: big=32.0, small=27.0
+C:\Users\roike\Desktop\wearhouse-optimizer\ui\tabs\optimization.py:89: SettingWithCopyWarning:
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  valid_coords['effective_volume'] = effective_volume
+INFO:ui.tabs.optimization:Volume-based optimization: safety_factor=0.70, small_capacity=27.0m³, big_capacity=32.0m³, scaling_factor=1000
+INFO:calculations.ors:Matrix operations using local Docker ORS instance: http://localhost:8080/ors/v2
+INFO:calculations.ors:Directions operations using cloud ORS API: https://api.openrouteservice.org
+INFO:data_manager:Recalculating force: 22763 customer-date pairs
+INFO:data_manager:Recalculated force metrics for 723 customers using buffer=1.0 over total_days=118
+INFO:data_manager:Updated customer force metrics with buffer=1.0
+INFO:calculations.fleet_service:Extracted capacities: big=32.0, small=27.0
+C:\Users\roike\Desktop\wearhouse-optimizer\ui\tabs\optimization.py:89: SettingWithCopyWarning:
+A value is trying to be set on a copy of a slice from a DataFrame.
+Try using .loc[row_indexer,col_indexer] = value instead
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+  valid_coords['effective_volume'] = effective_volume
+INFO:ui.tabs.optimization:Volume-based optimization: safety_factor=0.70, small_capacity=27.0m³, big_capacity=32.0m³, scaling_factor=1000
+INFO:ui.tabs.optimization:Strict optimization: using raw capacities and time limits
+INFO:calculations.route_optimizer:Starting Optimization for 709 locations.
+INFO:calculations.route_optimizer:Phase 0: Fetching Distance Matrix (attempt 1)...
+INFO:calculations.ors:Fetching distance matrix for 709 locations (single request)
+INFO:calculations.ors:Requesting matrix URL: http://localhost:8080/ors/v2/matrix/driving-car
+INFO:calculations.route_optimizer:Identified 125 Gush Dan customers (must use Small Trucks)
+INFO:calculations.route_optimizer:Fleet composition: 6 Small Trucks (scaled volume capacity=27000), 12 Big Trucks (scaled volume capacity=32000)
+INFO:calculations.route_optimizer:Detected unit mismatch - converting capacity from m³ to liters for calculation
+INFO:calculations.route_optimizer:Fleet Squeeze: total_volume=413.1m³, avg_capacity=29500.0m³, theoretical_min=1 trucks
+INFO:calculations.route_optimizer:Attempting solve with 1 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 1 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 2 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 2 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 3 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 3 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 4 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 4 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 5 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 5 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 6 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 6 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 7 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 7 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 8 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 8 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 9 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 9 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 10 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 10 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 11 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 11 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 12 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 12 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 13 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 13 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 14 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 14 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 15 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 15 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 16 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 16 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 17 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 17 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+INFO:calculations.route_optimizer:Attempting solve with 18 trucks...
+INFO:calculations.route_optimizer:Solver configuration: 18 vehicles (limited), max_shift=43200s, service_time=900s
+INFO:calculations.route_optimizer:Applying Gush Dan constraints: 125 customers restricted to Small Trucks
+INFO:calculations.route_optimizer:Solving VRP with OR-Tools...
+ERROR:calculations.route_optimizer:OR-Tools failed to find a solution
+ERROR:calculations.route_optimizer:Fleet Squeeze failed: No solution found with any fleet size
+WARNING:ui.tabs.optimization:Matrix data not found in solution, fetching from API
+INFO:calculations.ors:Fetching distance matrix for 709 locations (single request)
+INFO:calculations.ors:Requesting matrix URL: http://localhost:8080/ors/v2/matrix/driving-car
+INFO:calculations.simulation:Created node map: 708 customers mapped to matrix indices
