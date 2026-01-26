@@ -129,6 +129,9 @@ class MapBuilder:
                 icon=folium.Icon(color='darkred', icon='home', prefix='fa')
             ).add_to(m)
             
+            # Extract skipped customer indices from solution
+            skipped_indices = set(solution.get('skipped_customers', []))
+            
             # 1. Process Valid Routes
             routes = solution.get('routes', [])
             route_metrics = solution.get('route_metrics', [])
@@ -157,8 +160,15 @@ class MapBuilder:
                         if curr_node_idx - 1 < len(locations_df):
                             cust = locations_df.iloc[curr_node_idx - 1]
                             curr_coords = (cust['lat'], cust['lng'])
-                            stop_counter += 1
-                            self._add_stop_marker(m, cust, curr_coords, stop_counter, route_idx + 1, color)
+                            
+                            # Check if this node is skipped (unroutable coordinate)
+                            if curr_node_idx in skipped_indices:
+                                # Draw error marker for skipped customer
+                                self._add_error_marker(m, cust, curr_coords)
+                            else:
+                                # Draw normal numbered stop marker
+                                stop_counter += 1
+                                self._add_stop_marker(m, cust, curr_coords, stop_counter, route_idx + 1, color)
                 
                 # Draw route path
                 if route_polylines:
@@ -170,10 +180,13 @@ class MapBuilder:
                         popup=f'<div>Route {route_idx + 1}</div>'
                     ).add_to(m)
                 else:
-                    # Fallback path construction
+                    # Fallback path construction - filter out skipped indices
                     full_route_path = []
-                    for i in range(len(route)):
-                        curr_node_idx = route[i]
+                    # Filter route to exclude skipped indices
+                    filtered_route = [node_idx for node_idx in route if node_idx not in skipped_indices]
+                    
+                    for i in range(len(filtered_route)):
+                        curr_node_idx = filtered_route[i]
                         if curr_node_idx == 0:
                             curr_coords = warehouse_coords
                         else:
@@ -183,8 +196,8 @@ class MapBuilder:
                             else:
                                 continue
                         
-                        if i < len(route) - 1:
-                            next_node_idx = route[i+1]
+                        if i < len(filtered_route) - 1:
+                            next_node_idx = filtered_route[i+1]
                             if next_node_idx == 0:
                                 next_coords = warehouse_coords
                             else:
@@ -215,10 +228,28 @@ class MapBuilder:
                             popup=f'<div>Route {route_idx + 1}</div>'
                         ).add_to(m)
 
-            # 2. Process Unserved Customers
+            # 2. Process Skipped Customers (unroutable coordinates) that aren't in routes
+            # Find skipped customers that aren't already marked in routes
+            all_route_nodes = set()
+            for route in routes:
+                all_route_nodes.update(route)
+            
+            for skipped_idx in skipped_indices:
+                # Only add marker if not already in a route (will be marked during route processing)
+                # or if it's not the depot
+                if skipped_idx not in all_route_nodes and skipped_idx != 0:
+                    if skipped_idx - 1 < len(locations_df):
+                        cust = locations_df.iloc[skipped_idx - 1]
+                        coords = (cust['lat'], cust['lng'])
+                        self._add_error_marker(m, cust, coords)
+            
+            # 3. Process Unserved Customers
             unserved_list = solution.get('unserved', [])
             for unserved in unserved_list:
                 u_idx = unserved['id']
+                # Skip if already marked as skipped
+                if u_idx in skipped_indices:
+                    continue
                 if u_idx - 1 < len(locations_df):
                     cust = locations_df.iloc[u_idx - 1]
                     coords = (cust['lat'], cust['lng'])
@@ -283,4 +314,24 @@ class MapBuilder:
             popup=folium.Popup(popup_html, max_width=300),
             icon=folium.Icon(color='red', icon='exclamation-triangle', prefix='fa'),
             tooltip=f"Unserved: {customer.get('שם לקוח', 'N/A')}"
+        ).add_to(m)
+
+    def _add_error_marker(self, m, customer, coords):
+        """Helper to add an error marker for skipped customers (unroutable coordinates)."""
+        # Use Customer Force (force_volume)
+        vol = customer.get('force_volume', 0)
+
+        popup_html = f"""
+        <div style="font-family: Arial, sans-serif; color: #a94442;">
+            <strong>{customer.get('שם לקוח', 'N/A')}</strong><br>
+            <span style="font-weight: bold;">❌ UNROUTABLE COORDINATE</span><br>
+            Customer Force: {round(vol, 2)} m³
+        </div>
+        """
+        
+        folium.Marker(
+            location=coords,
+            popup=folium.Popup(popup_html, max_width=300),
+            icon=folium.Icon(color='red', icon='times', prefix='fa'),
+            tooltip="Unroutable Coordinate"
         ).add_to(m)

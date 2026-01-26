@@ -312,29 +312,63 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             unserved_list = solution.get('unserved', [])
 
             # Status Reporting
-            if unserved_list:
-                st.warning(f"Optimization complete with warnings: {num_routes} trucks used. {len(unserved_list)} customers could not be served.")
+            skipped_indices = solution.get('skipped_customers', [])
+            total_issues = len(unserved_list) + len(skipped_indices)
+            
+            if total_issues > 0:
+                st.warning(f"Optimization complete with warnings: {num_routes} trucks used. {total_issues} customers have issues ({len(unserved_list)} unserved, {len(skipped_indices)} unroutable).")
             else:
                 st.success(f"Optimization complete: {num_routes} trucks used. All customers served.")
 
-            # Unserved Customers Warning
-            if unserved_list:
-                unserved_ids = [str(u.get('id', 'Unknown')) for u in unserved_list]
-                st.error(f"⚠️ Unserved Customers Detected: {', '.join(unserved_ids)}")
-
-            # Skipped Customers Warning (unroutable coordinates)
-            skipped_indices = solution.get('skipped_customers', [])
-            if skipped_indices:
-                skipped_names = []
-                for node_idx in skipped_indices:
-                    # Node index 1 corresponds to row 0 in valid_coords (node 0 is warehouse)
-                    customer_row_idx = node_idx - 1
-                    if 0 <= customer_row_idx < len(valid_coords):
-                        customer_name = valid_coords.iloc[customer_row_idx].get('שם לקוח', f'Customer {node_idx}')
-                        skipped_names.append(str(customer_name))
-                    else:
-                        skipped_names.append(f'Customer {node_idx}')
-                st.warning(f"⚠️ Skipped Customers (unroutable coordinates): {', '.join(skipped_names)}")
+            # Build unified problematic customers table
+            problematic_customers = []
+            
+            # Add unserved customers
+            for unserved in unserved_list:
+                u_idx = unserved['id']
+                customer_row_idx = u_idx - 1
+                if 0 <= customer_row_idx < len(valid_coords):
+                    cust_row = valid_coords.iloc[customer_row_idx]
+                    # Find which route this customer was assigned to (if any)
+                    original_route = "N/A"
+                    for route_idx, route in enumerate(solution.get('routes', [])):
+                        if u_idx in route:
+                            original_route = f"Route {route_idx + 1}"
+                            break
+                    
+                    problematic_customers.append({
+                        'Customer ID': u_idx,
+                        'Name': cust_row.get('שם לקוח', f'Customer {u_idx}'),
+                        'Address': cust_row.get('כתובת', 'N/A'),
+                        'Issue Type': f"Unserved - {unserved.get('reason', 'Unknown error')}",
+                        'Original Route': original_route
+                    })
+            
+            # Add skipped customers (unroutable coordinates)
+            for node_idx in skipped_indices:
+                customer_row_idx = node_idx - 1
+                if 0 <= customer_row_idx < len(valid_coords):
+                    cust_row = valid_coords.iloc[customer_row_idx]
+                    # Find which route this customer was assigned to (if any)
+                    original_route = "N/A"
+                    for route_idx, route in enumerate(solution.get('routes', [])):
+                        if node_idx in route:
+                            original_route = f"Route {route_idx + 1}"
+                            break
+                    
+                    problematic_customers.append({
+                        'Customer ID': node_idx,
+                        'Name': cust_row.get('שם לקוח', f'Customer {node_idx}'),
+                        'Address': cust_row.get('כתובת', 'N/A'),
+                        'Issue Type': 'Unroutable Coordinate',
+                        'Original Route': original_route
+                    })
+            
+            # Display unified table in expander
+            if problematic_customers:
+                with st.expander("⚠️ Routing & Visualization Issues", expanded=True):
+                    issues_df = pd.DataFrame(problematic_customers)
+                    st.dataframe(issues_df, use_container_width=True, hide_index=True)
 
             # MAP Visualization
             st.subheader("Route Map")
