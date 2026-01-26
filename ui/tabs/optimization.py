@@ -9,6 +9,7 @@ import logging
 from typing import Dict, Any, Optional
 from config import Config
 from calculations.route_optimizer import RouteOptimizer
+from calculations.cluster_service import ClusterService
 from calculations.simulation import create_node_map, run_historical_simulation, count_simulation_exceptions
 from visualizer import MapBuilder
 from exceptions import DataValidationError, GeocodingError, APIRateLimitError
@@ -142,6 +143,46 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             demands = [0] + estimated_demand.tolist()
             base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
 
+            # --- Route-Name Based Clustering (Initial Solution Seeding) ---
+            # Compute Gush Dan indices (using shared helper via ClusterService)
+            cluster_service = ClusterService()
+            gush_dan_node_indices = cluster_service.get_gush_dan_customers(matrix_coords)
+            logger.info(f"Identified {len(gush_dan_node_indices)} Gush Dan customers for clustering")
+
+            # Build initial routes from route names (soft hints)
+            initial_routes = None
+            if 'current_route' in valid_coords.columns:
+                clusters = cluster_service.create_initial_routes_from_route_names(
+                    valid_coords,
+                    matrix_coords,
+                    route_name_col='current_route'
+                )
+
+                if clusters:
+                    logger.info(f"Created {len(clusters)} clusters from route names")
+
+                    balanced_clusters = cluster_service.balance_clusters(
+                        clusters,
+                        matrix_coords,
+                        min_cluster_size=3,
+                        gush_dan_indices=gush_dan_node_indices
+                    )
+
+                    initial_routes = cluster_service.build_initial_routes_for_ortools(
+                        balanced_clusters,
+                        num_vehicles=num_small_trucks + num_big_trucks,
+                        small_truck_vehicle_indices=list(range(num_small_trucks)),
+                        gush_dan_indices=gush_dan_node_indices
+                    )
+
+                    if initial_routes:
+                        non_empty_count = len([r for r in initial_routes if r])
+                        logger.info(f"Built initial routes for {non_empty_count} vehicles")
+                    else:
+                        logger.warning("Could not build valid initial routes (Gush Dan constraint conflict)")
+            else:
+                logger.info("No 'current_route' column found, skipping route-name clustering")
+
             # Exception Budget Retry Loop
             # Fleet Squeeze finds minimum trucks, then simulation checks budget
             # If budget exceeded, retry forcing more trucks until budget met or fleet exhausted
@@ -177,7 +218,8 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                     demands,
                     params,
                     coords=matrix_coords,
-                    min_trucks_override=min_trucks_required
+                    min_trucks_override=min_trucks_required,
+                    initial_routes=initial_routes  # Route-name based clustering seed
                 )
 
                 if not solution['solution_found']:

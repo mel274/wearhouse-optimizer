@@ -11,6 +11,7 @@ from ortools.constraint_solver import pywrapcp
 from .types import Solution, OptimizationParams, UnservedCustomer
 from . import ors, metrics
 import shared.utils as utils
+from shared.geo_utils import identify_gush_dan_customers
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -27,32 +28,21 @@ class RouteOptimizer:
     def _identify_gush_dan_customers(self, coords: List[Tuple[float, float]]) -> Set[int]:
         """
         Identify customer nodes that fall within Gush Dan bounds.
-        Node 0 is the depot, so we skip it.
+        
+        Delegates to shared/geo_utils.py to avoid drift between RouteOptimizer and ClusterService.
         
         Returns:
             Set of node indices (excluding depot) that are in Gush Dan
         """
-        gush_dan_indices = set()
-        bounds = Config.GUSH_DAN_BOUNDS
-        
-        for node_idx, (lat, lng) in enumerate(coords):
-            # Skip depot (node 0)
-            if node_idx == 0:
-                continue
-            
-            # Check if coordinates fall within Gush Dan bounds
-            if (bounds['min_lat'] <= lat <= bounds['max_lat'] and
-                bounds['min_lon'] <= lng <= bounds['max_lon']):
-                gush_dan_indices.add(node_idx)
-        
-        return gush_dan_indices
+        return identify_gush_dan_customers(coords)
 
     def solve(self,
               locations: List[str], 
               demands: List[int], 
               params: OptimizationParams, 
               coords: List[Tuple[float, float]],
-              min_trucks_override: int = None) -> Solution:
+              min_trucks_override: int = None,
+              initial_routes: List[List[int]] = None) -> Solution:
         """
         Executes the optimization pipeline using OR-Tools global solver.
         
@@ -63,6 +53,7 @@ class RouteOptimizer:
             params: Optimization parameters including scaled capacities (small_capacity, big_capacity)
             coords: List of (lat, lng) coordinates for each location
             min_trucks_override: If provided, Fleet Squeeze starts from this minimum instead of calculated minimum
+            initial_routes: Optional seeded routes from ClusterService (list of customer indices per vehicle, NO DEPOT)
         """
         logger.info(f"Starting Optimization for {len(locations)} locations.")
         
@@ -134,7 +125,11 @@ class RouteOptimizer:
 
             for n_trucks in range(start_trucks, max_fleet_size + 1):
                 logger.info(f"Attempting solve with {n_trucks} trucks...")
-                solution = self._solve_with_ortools(data, coords, locations, params, vehicle_limit=n_trucks)
+                solution = self._solve_with_ortools(
+                    data, coords, locations, params,
+                    vehicle_limit=n_trucks,
+                    initial_routes=initial_routes  # Pass seed to each attempt
+                )
 
                 if solution and solution.get('solution_found'):
                     logger.info(f"Success with {n_trucks} trucks!")
@@ -165,7 +160,8 @@ class RouteOptimizer:
             raise
 
     def _solve_with_ortools(self, data: Dict[str, Any], coords: List[Tuple[float, float]],
-                            locations: List[str], params: OptimizationParams, vehicle_limit: int) -> Solution:
+                            locations: List[str], params: OptimizationParams, vehicle_limit: int,
+                            initial_routes: List[List[int]] = None) -> Solution:
         """
         Solve the VRP using OR-Tools RoutingModel.
         
@@ -174,6 +170,8 @@ class RouteOptimizer:
             coords: List of (lat, lng) coordinates
             locations: List of location identifiers
             params: Optimization parameters
+            vehicle_limit: Maximum number of vehicles to use
+            initial_routes: Optional seeded routes (list of customer indices per vehicle, NO DEPOT)
             
         Returns:
             Solution dictionary with routes, metrics, and unserved customers
@@ -257,13 +255,17 @@ class RouteOptimizer:
         
         time_callback_index = routing.RegisterTransitCallback(time_callback)
         
-        # Add time dimension with soft constraints (elastic walls) - 48 hour horizon
-        # Allows solver to exceed time limits with penalties
+        # Add time dimension with soft constraints (elastic walls)
+        # Dynamic horizon: UI time × multiplier (hard cap for master routes)
+        # Master routes include ALL customers in territory, but daily routes only serve a subset.
+        # This allows flexibility while keeping results relevant (no 48h fallback).
+        dynamic_horizon = int(data['max_shift_seconds'] * Config.MASTER_ROUTE_TIME_MULTIPLIER)
+        
         # 1. Add the dimension (returns bool)
         routing.AddDimension(
             time_callback_index,
             0,  # slack
-            172800,  # horizon (48 hours for soft constraints)
+            dynamic_horizon,  # Hard cap at multiplier × UI time (e.g., 1.5× = 18h for 12h shift)
             True,  # fix_start_cumul_to_zero
             "Time"
         )
@@ -333,9 +335,29 @@ class RouteOptimizer:
         )
         search_parameters.time_limit.seconds = 60  # 60 second time limit for iterative squeeze
         
-        # Solve
+        # Solve - with or without seeded initial solution
         logger.info("Solving VRP with OR-Tools...")
-        solution = routing.SolveWithParameters(search_parameters)
+        
+        if initial_routes is not None:
+            # Slice routes to match current vehicle_limit
+            sliced_routes = initial_routes[:vehicle_limit]
+            
+            # Try to use seeded initial solution
+            initial_assignment = routing.ReadAssignmentFromRoutes(sliced_routes, True)
+            
+            if initial_assignment is not None:
+                non_empty_count = len([r for r in sliced_routes if r])
+                logger.info(f"Using seeded initial solution ({non_empty_count} non-empty routes)")
+                solution = routing.SolveFromAssignmentWithParameters(
+                    initial_assignment, search_parameters
+                )
+            else:
+                # Seed rejected (constraint conflict) - fallback to default
+                logger.warning("Initial solution rejected by OR-Tools (constraint conflict), using default heuristic")
+                solution = routing.SolveWithParameters(search_parameters)
+        else:
+            # No seed provided - use default
+            solution = routing.SolveWithParameters(search_parameters)
         
         if solution is None:
             logger.error("OR-Tools failed to find a solution")
