@@ -466,30 +466,6 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                             cols = [col for col in daily_df.columns if col != 'status'] + ['status']
                             daily_df = daily_df[cols]
                         st.dataframe(daily_df, use_container_width=True, hide_index=True)
-
-                # Footer: System-wide daily averages and totals
-                if not sim_results.empty:
-                    system_avg_distance = sim_results['Total_Distance_km'].mean()
-                    system_avg_time = sim_results['Daily_Total_Duration'].mean() / 3600.0  # Convert seconds to hours
-                    avg_stops_daily = sim_results['Total_Stops'].mean()
-                    
-                    # Calculate total volume usage
-                    total_load_sum = sim_results['Daily_Total_Load'].sum()
-                    total_capacity_sum = sim_results['Daily_Total_Capacity'].sum()
-                    total_volume_usage = (total_load_sum / total_capacity_sum * 100) if total_capacity_sum > 0 else 0.0
-
-                    # Calculate grand totals for the entire simulation period
-                    total_distance_all_days = sim_results['Total_Distance_km'].sum()
-                    total_time_all_days = sim_results['Max_Shift_Duration_hours'].sum()
-
-                    st.markdown("---")
-                    col1, col2, col3, col4, col5, col6 = st.columns(6)
-                    col1.metric("System Avg Daily Distance", f"{system_avg_distance:.1f} km")
-                    col2.metric("Total Daily Distance", f"{total_distance_all_days:.1f} km")
-                    col3.metric("Avg Daily Man-Hours", f"{system_avg_time:.1f} h")
-                    col4.metric("Total Daily Time", f"{total_time_all_days:.1f} hours")
-                    col5.metric("Avg Daily Stops", f"{avg_stops_daily:.1f}")
-                    col6.metric("Total Volume Usage", f"{total_volume_usage:.1f}%")
             else:
                 # Edge case: simulation results not available
                 st.info("Daily simulation statistics are unavailable. Please check the 'Static Routes' tab for route details.")

@@ -249,9 +249,19 @@ class ORSHandler:
             timeout=self.timeout
         )
 
-        # Enhanced error handling: log response.text on non-200 status
+        # Enhanced error handling: distinguish between different error types
         if response.status_code != 200:
-            logger.error(f"ORS API returned status {response.status_code}: {response.text}")
+            status_code = response.status_code
+            error_text = response.text
+            
+            # Distinguish between different HTTP status codes
+            if status_code == 429:
+                logger.error(f"ORS API rate limit exceeded (429): {error_text}")
+            elif status_code == 400:
+                logger.error(f"ORS API bad request (400): unroutable coordinate - {error_text}")
+            else:
+                logger.error(f"ORS API error ({status_code}): {error_text}")
+            
             response.raise_for_status()
 
         data = response.json()
@@ -390,10 +400,26 @@ class ORSHandler:
                 
             try:
                 return self._get_directions_single_request(current_coords)
-            except Exception as e:
+            except requests.exceptions.HTTPError as e:
+                # Extract status code and error message
+                status_code = None
                 error_str = str(e)
                 
-                # Try to parse which coordinate failed
+                # Try to get status code from response if available
+                if hasattr(e, 'response') and e.response is not None:
+                    status_code = e.response.status_code
+                    error_text = e.response.text if hasattr(e.response, 'text') else str(e)
+                    error_str = f"HTTP {status_code}: {error_text}"
+                
+                # Log root cause
+                if status_code == 429:
+                    logger.warning(f"Rate limit detected (429), attempting to skip problematic coordinates")
+                elif status_code == 400:
+                    logger.warning(f"Bad request (400) - unroutable coordinate detected, attempting to skip")
+                else:
+                    logger.warning(f"HTTP error ({status_code if status_code else 'unknown'}): {error_str}")
+                
+                # Try to parse which coordinate failed (works best for 400 errors)
                 bad_idx = _parse_bad_coordinate_index(error_str)
                 
                 if bad_idx is not None and 0 <= bad_idx < len(current_coords):
@@ -404,9 +430,30 @@ class ORSHandler:
                     # Remove the bad coordinate and retry
                     current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
                 else:
+                    # For 400 errors, if we can't parse the coordinate, try to get it from response
+                    if status_code == 400:
+                        # Try to extract coordinate index from response text
+                        if hasattr(e, 'response') and e.response is not None:
+                            response_text = e.response.text if hasattr(e.response, 'text') else ''
+                            bad_idx = _parse_bad_coordinate_index(response_text)
+                            if bad_idx is not None and 0 <= bad_idx < len(current_coords):
+                                bad_coord = current_coords[bad_idx]
+                                logger.warning(f"Skipping unroutable coordinate at index {bad_idx} (from response): {bad_coord}")
+                                skipped_list.append(bad_coord)
+                                current_coords = current_coords[:bad_idx] + current_coords[bad_idx + 1:]
+                                continue
+                    
                     # Cannot parse error or index out of range - give up on this chunk
-                    logger.error(f"Cannot identify bad coordinate from error: {error_str}")
+                    if status_code == 429:
+                        logger.error(f"Rate limit error cannot be resolved by skipping coordinates: {error_str}")
+                    else:
+                        logger.error(f"Cannot identify bad coordinate from error: {error_str}")
                     return None
+            except Exception as e:
+                # Catch any other exceptions
+                error_str = str(e)
+                logger.error(f"Unexpected error in _get_directions_with_skip: {error_str}")
+                return None
         
         logger.warning("Max skip attempts reached")
         return None
