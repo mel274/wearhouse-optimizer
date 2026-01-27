@@ -1,13 +1,17 @@
 """
 Main orchestration for the Warehouse Route Optimization.
-Version: 3.0 (OR-Tools Integration)
+Version: 4.0 (PyVroom Integration)
 """
 import logging
 import time
 import math
+import numpy as np
 from typing import List, Dict, Any, Tuple, Set
-from ortools.constraint_solver import routing_enums_pb2
-from ortools.constraint_solver import pywrapcp
+
+# PyVroom imports (replaces OR-Tools)
+import vroom
+from vroom import Input as VroomInput, Vehicle, Job, Amount, TimeWindow
+
 from .types import Solution, OptimizationParams, UnservedCustomer
 from . import ors, metrics
 import shared.utils as utils
@@ -18,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 class RouteOptimizer:
     """
-    Orchestrates the optimization pipeline using OR-Tools:
-    1. Fetch Matrix (cached) -> 2. OR-Tools Global Solver -> 3. Hydrate with ORS Directions
+    Orchestrates the optimization pipeline using PyVroom:
+    1. Fetch Matrix (cached) -> 2. PyVroom Solver -> 3. Hydrate with ORS Directions
     """
     
     def __init__(self, api_key: str):
@@ -36,6 +40,162 @@ class RouteOptimizer:
         """
         return identify_gush_dan_customers(coords)
 
+    # ========== PyVroom Model Builders (Phase 2) ==========
+
+    def _build_vroom_cost_matrix(self, data: Dict[str, Any]) -> List[List[int]]:
+        """
+        Build the cost matrix for VROOM optimization.
+        
+        Cost formula: cost[i][j] = int(distance[i][j] + 6 * duration[i][j])
+        VROOM expects integer costs.
+        
+        Args:
+            data: Dictionary containing 'distance_matrix' and 'time_matrix'
+            
+        Returns:
+            2D list of integer costs
+        """
+        distance_matrix = data['distance_matrix']
+        time_matrix = data['time_matrix']
+        num_nodes = len(distance_matrix)
+        
+        cost_matrix = []
+        for i in range(num_nodes):
+            row = []
+            for j in range(num_nodes):
+                distance = distance_matrix[i][j]
+                duration = time_matrix[i][j]
+                # Cost formula per plan.md: distance + 6 * duration
+                cost = int(distance + 6 * duration)
+                row.append(cost)
+            cost_matrix.append(row)
+        
+        return cost_matrix
+
+    def _build_vroom_jobs(self, data: Dict[str, Any], params: OptimizationParams) -> List[Job]:
+        """
+        Build VROOM Job objects for all customers (nodes 1..N, excluding depot).
+        
+        Args:
+            data: Dictionary containing 'demands', 'gush_dan_node_indices'
+            params: Contains 'service_time_seconds'
+            
+        Returns:
+            List of vroom.Job objects
+        """
+        demands = data['demands']
+        gush_dan_node_indices = data.get('gush_dan_node_indices', set())
+        service_time_seconds = params.get('service_time_seconds', 300)
+        num_nodes = len(demands)
+        
+        jobs = []
+        # Nodes 1..N are customers (node 0 is depot)
+        for node_idx in range(1, num_nodes):
+            # Skill 1 = Gush Dan restriction (only small trucks can serve)
+            skills = {1} if node_idx in gush_dan_node_indices else set()
+            
+            job = Job(
+                id=node_idx,
+                location=node_idx,  # Location index in the matrix
+                delivery=Amount([demands[node_idx]]),  # Single dimension: volume
+                service=service_time_seconds,
+                skills=skills
+            )
+            jobs.append(job)
+        
+        return jobs
+
+    def _build_vroom_vehicles(self, data: Dict[str, Any], vehicle_limit: int) -> List[Vehicle]:
+        """
+        Build VROOM Vehicle objects up to the specified limit.
+        
+        Args:
+            data: Dictionary containing 'vehicle_capacities', 'small_truck_vehicle_indices', 
+                  'max_shift_seconds', 'depot'
+            vehicle_limit: Maximum number of vehicles to create
+            
+        Returns:
+            List of vroom.Vehicle objects
+        """
+        vehicle_capacities = data['vehicle_capacities'][:vehicle_limit]
+        small_truck_indices = set(data.get('small_truck_vehicle_indices', []))
+        max_shift_seconds = data['max_shift_seconds']
+        depot = data['depot']
+        
+        vehicles = []
+        for vehicle_id in range(vehicle_limit):
+            capacity = vehicle_capacities[vehicle_id]
+            
+            # Skill 1 = can serve Gush Dan customers (only small trucks have this)
+            skills = {1} if vehicle_id in small_truck_indices else set()
+            
+            vehicle = Vehicle(
+                id=vehicle_id,
+                start=depot,  # Start at depot
+                end=depot,    # Return to depot
+                capacity=Amount([capacity]),  # Single dimension: volume
+                max_travel_time=max_shift_seconds,  # Enforce shift limit
+                skills=skills
+            )
+            vehicles.append(vehicle)
+        
+        return vehicles
+
+    def _build_vroom_input(self, data: Dict[str, Any], params: OptimizationParams, 
+                           vehicle_limit: int) -> Tuple[VroomInput, List[List[int]]]:
+        """
+        Build the complete VROOM Input object with cost matrix, jobs, and vehicles.
+        
+        Args:
+            data: Dictionary containing matrices, demands, capacities, etc.
+            params: Optimization parameters
+            vehicle_limit: Maximum number of vehicles to use
+            
+        Returns:
+            Tuple of (VroomInput object, cost_matrix for reference)
+        """
+        # Build cost matrix
+        cost_matrix = self._build_vroom_cost_matrix(data)
+        
+        # Build jobs (customers)
+        jobs = self._build_vroom_jobs(data, params)
+        
+        # Build vehicles
+        vehicles = self._build_vroom_vehicles(data, vehicle_limit)
+        
+        # Create VROOM Input
+        vroom_input = VroomInput()
+        
+        # Must use np.uintc (not np.uint32) to get 'I' buffer format required by pyvroom on Windows
+        # Create _vroom.Matrix directly to bypass the wrapper's dtype conversion
+        from vroom import _vroom
+        
+        # Set the actual time matrix as durations (for time-based constraints like max_travel_time)
+        time_matrix = data['time_matrix']
+        time_matrix_np = np.array(time_matrix, dtype=np.uintc)
+        durations_vroom_matrix = _vroom.Matrix(time_matrix_np)
+        vroom_input.set_durations_matrix(profile="car", matrix_input=durations_vroom_matrix)
+        
+        # Set the custom cost matrix for optimization objective (distance + 6 * duration)
+        cost_matrix_np = np.array(cost_matrix, dtype=np.uintc)
+        costs_vroom_matrix = _vroom.Matrix(cost_matrix_np)
+        vroom_input.set_costs_matrix(profile="car", matrix_input=costs_vroom_matrix)
+        
+        # Add all jobs
+        for job in jobs:
+            vroom_input.add_job(job)
+        
+        # Add all vehicles
+        for vehicle in vehicles:
+            vroom_input.add_vehicle(vehicle)
+        
+        logger.info(f"Built VROOM input: {len(jobs)} jobs, {len(vehicles)} vehicles, "
+                   f"{len(cost_matrix)}x{len(cost_matrix)} cost matrix")
+        
+        return vroom_input, cost_matrix
+
+    # ========== End PyVroom Model Builders ==========
+
     def solve(self,
               locations: List[str], 
               demands: List[int], 
@@ -44,7 +204,7 @@ class RouteOptimizer:
               min_trucks_override: int = None,
               initial_routes: List[List[int]] = None) -> Solution:
         """
-        Executes the optimization pipeline using OR-Tools global solver.
+        Executes the optimization pipeline using PyVroom solver.
         
         Args:
             locations: List of location identifiers
@@ -163,7 +323,7 @@ class RouteOptimizer:
                             locations: List[str], params: OptimizationParams, vehicle_limit: int,
                             initial_routes: List[List[int]] = None) -> Solution:
         """
-        Solve the VRP using OR-Tools RoutingModel.
+        Solve the VRP using PyVroom.
         
         Args:
             data: Dictionary containing distance_matrix, time_matrix, demands, vehicle_capacities, etc.
@@ -172,6 +332,7 @@ class RouteOptimizer:
             params: Optimization parameters
             vehicle_limit: Maximum number of vehicles to use
             initial_routes: Optional seeded routes (list of customer indices per vehicle, NO DEPOT)
+                           Note: PyVroom does not support initial routes - this parameter is ignored.
             
         Returns:
             Solution dictionary with routes, metrics, and unserved customers
@@ -183,195 +344,28 @@ class RouteOptimizer:
         
         num_nodes = len(data['distance_matrix'])
         depot = data['depot']
-
-        # Slice vehicle data to the specified limit
-        vehicle_capacities_limited = data['vehicle_capacities'][:vehicle_limit]
-
+        
         # Log solver configuration
         service_time = params.get('service_time_seconds', 300)
         logger.info(f"Solver configuration: {vehicle_limit} vehicles (limited), max_shift={data['max_shift_seconds']}s, service_time={service_time}s")
         data['vehicle_limit'] = vehicle_limit
-
-        # Create the routing index manager
-        manager = pywrapcp.RoutingIndexManager(num_nodes, vehicle_limit, depot)
         
-        # Create routing model
-        routing = pywrapcp.RoutingModel(manager)
-        
-        # Distance callback
-        def distance_callback(from_index: int, to_index: int) -> int:
-            """Returns the distance between the two nodes."""
-            from_node = manager.IndexToNode(from_index)
-            to_node = manager.IndexToNode(to_index)
-            return int(data['distance_matrix'][from_node][to_node])
-        
-        distance_callback_index = routing.RegisterTransitCallback(distance_callback)
-        
-        # Cost callback - weighted combination of distance and time
-        def cost_callback(from_index: int, to_index: int) -> int:
-            """
-            Returns weighted cost: (Distance * 1.0) + (Time * 1.0).
-            Uses travel time only (not service time) since service time is fixed per customer.
-            """
-            from_node = manager.IndexToNode(from_index)
-            to_node = manager.IndexToNode(to_index)
-            distance = int(data['distance_matrix'][from_node][to_node])
-            travel_time = int(data['time_matrix'][from_node][to_node])
-            return int(distance * 1.0 + travel_time * 6.0)
-        
-        cost_callback_index = routing.RegisterTransitCallback(cost_callback)
-        
-        # Set arc cost evaluator
-        routing.SetArcCostEvaluatorOfAllVehicles(cost_callback_index)
-
-        # Set fixed cost per vehicle to enforce fleet size minimization (Stage 2 priority)
-        routing.SetFixedCostOfAllVehicles(Config.VEHICLE_FIXED_COST)
-        
-        # Time callback - includes service time when leaving customer nodes
-        # Service time is added when leaving a customer, but NOT when leaving the depot
-        service_time_seconds = params.get('service_time_seconds', 300)
-        
-        def time_callback(from_index: int, to_index: int) -> int:
-            """
-            Returns the total time cost: travel time + service time (if leaving a customer).
-            
-            Rule:
-            - If leaving the depot: return only travel time
-            - If leaving a customer: return travel time + service time
-            """
-            from_node = manager.IndexToNode(from_index)
-            to_node = manager.IndexToNode(to_index)
-            
-            # Get base travel time from matrix
-            travel_time = int(data['time_matrix'][from_node][to_node])
-            
-            # Add service time if leaving a customer node (not the depot)
-            if from_node != depot:
-                total_time = travel_time + service_time_seconds
-            else:
-                total_time = travel_time
-            
-            return int(total_time)
-        
-        time_callback_index = routing.RegisterTransitCallback(time_callback)
-        
-        # Add time dimension with soft constraints (elastic walls)
-        # Dynamic horizon: UI time × multiplier (hard cap for master routes)
-        # Master routes include ALL customers in territory, but daily routes only serve a subset.
-        # This allows flexibility while keeping results relevant (no 48h fallback).
-        dynamic_horizon = int(data['max_shift_seconds'] * Config.MASTER_ROUTE_TIME_MULTIPLIER)
-        
-        # 1. Add the dimension (returns bool)
-        routing.AddDimension(
-            time_callback_index,
-            0,  # slack
-            dynamic_horizon,  # Hard cap at multiplier × UI time (e.g., 1.5× = 18h for 12h shift)
-            True,  # fix_start_cumul_to_zero
-            "Time"
-        )
-
-        # 2. Retrieve the dimension object explicitly
-        time_dimension = routing.GetDimensionOrDie("Time")
-
-        # Add soft upper bounds for time (elastic constraints)
-        for vehicle_id in range(vehicle_limit):
-            index = routing.End(vehicle_id)
-            time_dimension.SetCumulVarSoftUpperBound(index, data['max_shift_seconds'], 1000)
-
-        # Get the Time dimension and set global span cost to balance workloads across drivers
-        time_dim = routing.GetDimensionOrDie("Time")
-        time_dim.SetGlobalSpanCostCoefficient(100)
-        
-        # Demand callback - returns the scaled volume demand for each node
-        def demand_callback(from_index: int) -> int:
-            """
-            Returns the scaled volume demand of the node (m³ * 1000 as integer).
-            
-            Note: Node 0 (depot) should have demand 0.
-            Customer nodes have their scaled effective volume (force_volume / safety_factor * 1000).
-            """
-            from_node = manager.IndexToNode(from_index)
-            demand = data['demands'][from_node]
-            
-            # Ensure demand is non-negative and convert to int
-            demand_value = max(0, int(demand))
-            
-            # Validate depot has zero demand
-            if from_node == depot and demand_value != 0:
-                logger.warning(f"Depot (node {depot}) has non-zero demand: {demand_value}. Setting to 0.")
-                return 0
-            
-            return demand_value
-        
-        demand_callback_index = routing.RegisterUnaryTransitCallback(demand_callback)
-        
-        # Add capacity dimension with hard constraints (per-vehicle limits)
-        routing.AddDimensionWithVehicleCapacity(
-            demand_callback_index,
-            0,  # slack
-            vehicle_capacities_limited,  # list of per-vehicle capacities (hard limits)
-            True,  # fix_start_cumul_to_zero
-            "Capacity"
-        )
-        
-        # Apply Gush Dan constraints: restrict Gush Dan customers to Small Trucks only
-        gush_dan_node_indices = data.get('gush_dan_node_indices', set())
-        small_truck_vehicle_indices = data.get('small_truck_vehicle_indices', [])
-        
-        if gush_dan_node_indices and small_truck_vehicle_indices:
-            logger.info(f"Applying Gush Dan constraints: {len(gush_dan_node_indices)} customers restricted to Small Trucks")
-            for gush_dan_node in gush_dan_node_indices:
-                node_index = manager.NodeToIndex(gush_dan_node)
-                # Restrict this node to only be assigned to Small Truck vehicles
-                routing.VehicleVar(node_index).SetValues(small_truck_vehicle_indices)
-        
-        # Set search parameters
-        search_parameters = pywrapcp.DefaultRoutingSearchParameters()
-        search_parameters.first_solution_strategy = (
-            routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
-        )
-        search_parameters.local_search_metaheuristic = (
-            routing_enums_pb2.LocalSearchMetaheuristic.GUIDED_LOCAL_SEARCH
-        )
-        search_parameters.time_limit.seconds = 60  # 60 second time limit for iterative squeeze
-        
-        # Solve - with or without seeded initial solution
-        logger.info("Solving VRP with OR-Tools...")
-        
-        if initial_routes is not None:
-            # Slice routes to match current vehicle_limit
-            sliced_routes = initial_routes[:vehicle_limit]
-            
-            # Try to use seeded initial solution
-            initial_assignment = routing.ReadAssignmentFromRoutes(sliced_routes, True)
-            
-            if initial_assignment is not None:
-                non_empty_count = len([r for r in sliced_routes if r])
-                logger.info(f"Using seeded initial solution ({non_empty_count} non-empty routes)")
-                solution = routing.SolveFromAssignmentWithParameters(
-                    initial_assignment, search_parameters
-                )
-            else:
-                # Seed rejected (constraint conflict) - fallback to default
-                logger.warning("Initial solution rejected by OR-Tools (constraint conflict), using default heuristic")
-                solution = routing.SolveWithParameters(search_parameters)
-        else:
-            # No seed provided - use default
-            solution = routing.SolveWithParameters(search_parameters)
-        
-        if solution is None:
-            logger.error("OR-Tools failed to find a solution")
+        # Build VROOM input using Phase 2 helpers
+        try:
+            vroom_input, cost_matrix = self._build_vroom_input(data, params, vehicle_limit)
+        except Exception as e:
+            logger.error(f"Failed to build VROOM input: {e}")
             return {
                 'solution_found': False,
                 'routes': [],
                 'route_metrics': [],
                 'unserved': [
-                    {'id': i, 'reason': 'Solver failed to find solution', 'demand': data['demands'][i]}
+                    {'id': i, 'reason': f'Failed to build solver input: {e}', 'demand': data['demands'][i]}
                     for i in range(1, num_nodes)
                 ],
                 'suggestions': {
                     'all_served': False,
-                    'message': 'Solver failed to find a feasible solution',
+                    'message': 'Failed to build solver input',
                     'suggestions': []
                 },
                 'metrics': {
@@ -385,11 +379,250 @@ class RouteOptimizer:
                 }
             }
         
-        # Extract solution
-        return self._extract_solution(routing, manager, solution, data, coords, locations, params)
+        # Solve with PyVroom
+        logger.info("Solving VRP with PyVroom...")
+        try:
+            vroom_solution = vroom_input.solve(exploration_level=2, nb_threads=4)
+        except Exception as e:
+            logger.error(f"PyVroom solve failed: {e}")
+            return {
+                'solution_found': False,
+                'routes': [],
+                'route_metrics': [],
+                'unserved': [
+                    {'id': i, 'reason': f'Solver failed: {e}', 'demand': data['demands'][i]}
+                    for i in range(1, num_nodes)
+                ],
+                'suggestions': {
+                    'all_served': False,
+                    'message': f'PyVroom solver failed: {e}',
+                    'suggestions': []
+                },
+                'metrics': {
+                    'total_distance': 0,
+                    'total_time': 0,
+                    'max_route_time': 0,
+                    'num_vehicles_used': 0,
+                    'customers_served': 0,
+                    'customers_unserved': num_nodes - 1,
+                    'service_rate': 0
+                }
+            }
+        
+        # Extract solution from PyVroom result
+        return self._extract_vroom_solution(vroom_solution, data, coords, locations, params)
 
-    def _extract_solution(self, routing: pywrapcp.RoutingModel, manager: pywrapcp.RoutingIndexManager,
-                         solution: pywrapcp.Assignment, data: Dict[str, Any], 
+    def _extract_vroom_solution(self, vroom_solution: Any, data: Dict[str, Any],
+                                coords: List[Tuple[float, float]], locations: List[str],
+                                params: OptimizationParams) -> Solution:
+        """
+        Extract routes from PyVroom solution and hydrate with ORS directions.
+        
+        Produces the exact same Solution schema as the original OR-Tools implementation.
+        
+        Args:
+            vroom_solution: PyVroom solution object (routes as pandas DataFrame)
+            data: Data dictionary with matrices and parameters
+            coords: List of (lat, lng) coordinates
+            locations: List of location identifiers
+            params: Optimization parameters
+            
+        Returns:
+            Solution dictionary with routes, metrics, and unserved customers
+        """
+        routes = []
+        route_metrics = []
+        served_indices = set()
+        
+        # Track coordinates that couldn't be routed (for UI warning)
+        all_skipped_coords = []
+        
+        # Track node indices that were skipped during diagnostic (for UI table)
+        all_skipped_node_indices = []
+        
+        # Determine truck type based on vehicle index
+        num_small_trucks = len(data.get('small_truck_vehicle_indices', []))
+        depot = data['depot']
+        
+        # Extract routes from PyVroom solution (DataFrame format)
+        routes_df = vroom_solution.routes
+        
+        # Get unique vehicle IDs that have routes
+        if len(routes_df) > 0:
+            vehicle_ids = routes_df['vehicle_id'].unique()
+        else:
+            vehicle_ids = []
+        
+        for vehicle_id in vehicle_ids:
+            # Filter steps for this vehicle
+            vehicle_steps = routes_df[routes_df['vehicle_id'] == vehicle_id]
+            
+            # Extract job IDs (type == 'job')
+            job_steps = vehicle_steps[vehicle_steps['type'] == 'job']
+            route_nodes = job_steps['id'].tolist()
+            
+            # Add served indices
+            for job_id in route_nodes:
+                served_indices.add(job_id)
+            
+            # Only add non-empty routes
+            if route_nodes:
+                # Build full route: depot -> customers -> depot
+                full_route = [depot] + route_nodes + [depot]
+                
+                # Determine vehicle type: first num_small_trucks are Small, rest are Big
+                vehicle_type = "Small" if vehicle_id < num_small_trucks else "Big"
+                
+                # Get route coordinates for directions API
+                route_coords = [coords[node] for node in full_route]
+                
+                # Get geometry and precise metrics from ORS Directions API
+                directions_data = self.ors_handler.get_directions(route_coords)
+                
+                if directions_data is not None:
+                    # Successful ORS response - use detailed geometry and metrics
+                    geometry = directions_data['geometry']
+                    distance = directions_data['distance']
+                    duration = directions_data['duration']
+                    
+                    # Collect any skipped coordinates (unroutable points)
+                    skipped_coords = directions_data.get('skipped_coordinates', [])
+                    if skipped_coords:
+                        all_skipped_coords.extend(skipped_coords)
+                    
+                    # Add service time for each customer stop
+                    service_time = params.get('service_time_seconds', 300)
+                    duration += len(route_nodes) * service_time
+                    
+                    # Format polylines for frontend (list of coordinate lists)
+                    polylines = [geometry] if geometry else []
+                
+                else:
+                    # Fallback to matrix-based estimates
+                    logger.warning(f"ORS Directions API failed for Vehicle {vehicle_id}, using matrix fallback")
+                    
+                    # Create straight-line geometry connecting stops in order
+                    geometry = [(coords[node][0], coords[node][1]) for node in full_route]
+                    
+                    # Calculate metrics from internal matrices
+                    total_distance = 0.0
+                    total_duration = 0.0
+                    for i in range(len(full_route) - 1):
+                        from_node = full_route[i]
+                        to_node = full_route[i + 1]
+                        total_distance += data['distance_matrix'][from_node][to_node]
+                        total_duration += data['time_matrix'][from_node][to_node]
+                    
+                    # Add service time for each customer stop
+                    service_time = params.get('service_time_seconds', 300)
+                    total_duration += len(route_nodes) * service_time
+                    
+                    distance = total_distance
+                    duration = total_duration
+                    polylines = [geometry]
+                
+                # Store route and metrics
+                routes.append(full_route)
+                route_metrics.append({
+                    'distance': distance,
+                    'duration': duration,
+                    'polylines': polylines,
+                    'vehicle_type': vehicle_type,
+                    'vehicle_id': int(vehicle_id)
+                })
+        
+        # Identify unserved customers from PyVroom unassigned jobs
+        all_customer_indices = set(range(1, len(locations)))
+        unserved_indices = all_customer_indices - served_indices
+        
+        # Get maximum capacity (big truck capacity) for validation
+        max_capacity = max(data['vehicle_capacities']) if data['vehicle_capacities'] else params.get('big_capacity', params.get('capacity', 0))
+        
+        unserved_customers = []
+        
+        # Map unassigned jobs from PyVroom solution (list of Job objects)
+        unassigned_jobs = vroom_solution.unassigned
+        if len(unassigned_jobs) > 0:
+            for job in unassigned_jobs:
+                job_id = job._id  # Job ID is stored in _id attribute
+                # Determine reason based on constraints
+                if data['demands'][job_id] > max_capacity:
+                    reason = 'Volume demand exceeds vehicle capacity'
+                else:
+                    reason = 'Not assigned to any route (constraint violation)'
+                
+                unserved_customers.append({
+                    'id': job_id,
+                    'reason': reason,
+                    'demand': data['demands'][job_id]
+                })
+        
+        # Also add any jobs that weren't in the solution at all
+        for idx in unserved_indices:
+            if not any(u['id'] == idx for u in unserved_customers):
+                if data['demands'][idx] > max_capacity:
+                    reason = 'Volume demand exceeds vehicle capacity'
+                else:
+                    reason = 'Not assigned to any route'
+                unserved_customers.append({
+                    'id': idx,
+                    'reason': reason,
+                    'demand': data['demands'][idx]
+                })
+        
+        # Generate suggestions
+        suggestions = self._generate_suggestions(
+            unserved_customers,
+            data['demands'],
+            params,
+            coords,
+            len(served_indices),
+            len(all_customer_indices)
+        )
+        
+        # Calculate metrics
+        total_distance = sum(r['distance'] for r in route_metrics)
+        total_time = sum(r['duration'] for r in route_metrics)
+        max_route_time = max((r['duration'] for r in route_metrics), default=0)
+        
+        # Map skipped coordinates to node indices for UI display
+        skipped_node_indices = list(all_skipped_node_indices)
+        
+        for skipped_coord in all_skipped_coords:
+            for node_idx, node_coord in enumerate(coords):
+                if (abs(node_coord[0] - skipped_coord[0]) < 0.0001 and
+                    abs(node_coord[1] - skipped_coord[1]) < 0.0001):
+                    if node_idx != 0 and node_idx not in skipped_node_indices:
+                        skipped_node_indices.append(node_idx)
+                    break
+        
+        if skipped_node_indices:
+            logger.warning(f"Skipped {len(skipped_node_indices)} unroutable customers during directions fetch")
+        
+        # Fleet Squeeze: treat any unassigned jobs as infeasible for this truck count
+        # A solution is only "found" if ALL jobs are assigned (no unserved customers)
+        solution_found = len(unserved_customers) == 0
+        
+        return {
+            'solution_found': solution_found,
+            'routes': routes,
+            'route_metrics': route_metrics,
+            'unserved': unserved_customers,
+            'suggestions': suggestions,
+            'skipped_customers': skipped_node_indices,
+            'metrics': {
+                'total_distance': total_distance,
+                'total_time': total_time,
+                'max_route_time': max_route_time,
+                'num_vehicles_used': len(routes),
+                'customers_served': len(served_indices),
+                'customers_unserved': len(unserved_customers),
+                'service_rate': len(served_indices) / len(all_customer_indices) if all_customer_indices else 0
+            }
+        }
+
+    def _extract_solution(self, routing: Any, manager: Any,
+                         solution: Any, data: Dict[str, Any], 
                          coords: List[Tuple[float, float]], locations: List[str],
                          params: OptimizationParams) -> Solution:
         """

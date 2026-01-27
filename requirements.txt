@@ -7,4 +7,4 @@ plotly
 openpyxl
 python-dotenv
 requests
-ortools
+pyvroom

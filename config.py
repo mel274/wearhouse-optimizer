@@ -87,6 +87,8 @@ class Config:
     ORS_MAX_RETRIES = 3
     ORS_MATRIX_CHUNK_SIZE = 2000  # only relevant for large location sets when using api not loacl docker.
     
+  
+    
     # --- GRACEFUL EXECUTION SETTINGS ---
     RATE_LIMIT_DELAY = 0.1  # Wait 0.1 seconds between API calls (Prevents overloading)
     STEP_DELAY = 3.0        # Wait 3 seconds between major logic stages

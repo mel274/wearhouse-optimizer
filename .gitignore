@@ -6,7 +6,8 @@ __pycache__/
 
 # Virtual environment 
 .venv/
-
+*.cfg
+venv/ 
 # Editor directories and files
 .idea/
 .vscode/
@@ -19,3 +20,4 @@ Thumbs.db
 geocode_cache.pkl
 .env
 *.md
+*.xlsx
