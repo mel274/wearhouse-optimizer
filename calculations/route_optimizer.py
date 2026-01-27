@@ -15,7 +15,7 @@ from vroom import Input as VroomInput, Vehicle, Job, Amount, TimeWindow
 from .types import Solution, OptimizationParams, UnservedCustomer
 from . import ors, metrics
 import shared.utils as utils
-from shared.geo_utils import identify_gush_dan_customers
+from shared.geo_utils import identify_small_truck_customers
 from config import Config
 
 logger = logging.getLogger(__name__)
@@ -29,16 +29,16 @@ class RouteOptimizer:
     def __init__(self, api_key: str):
         self.ors_handler = ors.ORSHandler(api_key)
 
-    def _identify_gush_dan_customers(self, coords: List[Tuple[float, float]]) -> Set[int]:
+    def _identify_small_truck_customers(self, coords: List[Tuple[float, float]]) -> Set[int]:
         """
-        Identify customer nodes that fall within Gush Dan bounds.
+        Identify customer nodes that fall within small truck restricted zones.
         
         Delegates to shared/geo_utils.py to avoid drift between RouteOptimizer and ClusterService.
         
         Returns:
-            Set of node indices (excluding depot) that are in Gush Dan
+            Set of node indices (excluding depot) that are in restricted zones
         """
-        return identify_gush_dan_customers(coords)
+        return identify_small_truck_customers(coords)
 
     # ========== PyVroom Model Builders (Phase 2) ==========
 
@@ -84,15 +84,15 @@ class RouteOptimizer:
             List of vroom.Job objects
         """
         demands = data['demands']
-        gush_dan_node_indices = data.get('gush_dan_node_indices', set())
+        small_truck_node_indices = data.get('small_truck_node_indices', set())
         service_time_seconds = params.get('service_time_seconds', 300)
         num_nodes = len(demands)
         
         jobs = []
         # Nodes 1..N are customers (node 0 is depot)
         for node_idx in range(1, num_nodes):
-            # Skill 1 = Gush Dan restriction (only small trucks can serve)
-            skills = {1} if node_idx in gush_dan_node_indices else set()
+            # Skill 1 = Small truck zone restriction (only small trucks can serve)
+            skills = {1} if node_idx in small_truck_node_indices else set()
             
             job = Job(
                 id=node_idx,
@@ -225,9 +225,9 @@ class RouteOptimizer:
             logger.info("Phase 0: Fetching Distance Matrix (with caching)...")
             matrix_data = self.ors_handler.get_distance_matrix(coords)
             
-            # --- Phase 0.5: Identify Gush Dan Customers ---
-            gush_dan_node_indices = self._identify_gush_dan_customers(coords)
-            logger.info(f"Identified {len(gush_dan_node_indices)} Gush Dan customers (must use Small Trucks)")
+            # --- Phase 0.5: Identify Small Truck Zone Customers ---
+            small_truck_node_indices = self._identify_small_truck_customers(coords)
+            logger.info(f"Identified {len(small_truck_node_indices)} small truck zone customers (must use Small Trucks)")
             
             # --- Phase 0.6: Setup Heterogeneous Fleet ---
             num_small_trucks = params.get('num_small_trucks', 6)
@@ -252,8 +252,8 @@ class RouteOptimizer:
                 'vehicle_capacities': vehicle_capacities,  # Scaled volume capacities (m³ * 1000)
                 'num_vehicles': total_fleet_size,
                 'depot': 0,
-                'max_shift_seconds': params['max_shift_seconds'],
-                'gush_dan_node_indices': gush_dan_node_indices,
+                'max_shift_seconds': params.get('master_max_shift_seconds', params['max_shift_seconds']),
+                'small_truck_node_indices': small_truck_node_indices,
                 'small_truck_vehicle_indices': small_truck_vehicle_indices
             }
             
@@ -382,7 +382,7 @@ class RouteOptimizer:
         # Solve with PyVroom
         logger.info("Solving VRP with PyVroom...")
         try:
-            vroom_solution = vroom_input.solve(exploration_level=2, nb_threads=4)
+            vroom_solution = vroom_input.solve(exploration_level=2, nb_threads=10)
         except Exception as e:
             logger.error(f"PyVroom solve failed: {e}")
             return {

@@ -38,14 +38,6 @@ class Config:
     DEFAULT_CENTER_LAT = 31.7683  # Jerusalem
     DEFAULT_CENTER_LNG = 35.2137
 
-    # Geographic restriction zones
-    GUSH_DAN_BOUNDS = {
-        'min_lat': 32.00,
-        'max_lat': 32.12,
-        'min_lon': 34.74,
-        'max_lon': 34.90,
-    }
-
     # Fleet defaults for volume-based calculations
     FLEET_DEFAULTS = {
         'big_truck_vol': 32.0,

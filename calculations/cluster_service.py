@@ -6,7 +6,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, List, Tuple, Set, Optional
 from config import Config
-from shared.geo_utils import identify_gush_dan_customers
+from shared.geo_utils import identify_small_truck_customers
 
 logger = logging.getLogger(__name__)
 
@@ -21,12 +21,12 @@ class ClusterService:
     """
 
     @staticmethod
-    def get_gush_dan_customers(coords: List[Tuple[float, float]]) -> Set[int]:
+    def get_small_truck_customers(coords: List[Tuple[float, float]]) -> Set[int]:
         """
-        Get Gush Dan customer indices using shared helper.
+        Get small truck zone customer indices using shared helper.
         Delegates to shared/geo_utils.py to avoid drift.
         """
-        return identify_gush_dan_customers(coords)
+        return identify_small_truck_customers(coords)
 
     def create_initial_routes_from_route_names(
         self,
@@ -73,7 +73,7 @@ class ClusterService:
         clusters: Dict[str, List[int]],
         coords: List[Tuple[float, float]],
         min_cluster_size: int = 3,
-        gush_dan_indices: Set[int] = None
+        small_truck_indices: Set[int] = None
     ) -> List[List[int]]:
         """
         Balance clusters by merging small ones (< min_cluster_size)
@@ -83,13 +83,13 @@ class ClusterService:
             clusters: Dictionary mapping route_name -> list of matrix indices
             coords: Full matrix_coords (index 0 = depot)
             min_cluster_size: Minimum customers per cluster
-            gush_dan_indices: Set of node indices restricted to Small Trucks
+            small_truck_indices: Set of node indices restricted to Small Trucks
 
         Returns:
             List of balanced routes (each route is list of customer matrix indices, no depot)
         """
-        if gush_dan_indices is None:
-            gush_dan_indices = set()
+        if small_truck_indices is None:
+            small_truck_indices = set()
 
         # Convert to list of (route_name, indices)
         cluster_list = [(name, indices) for name, indices in clusters.items()]
@@ -151,15 +151,15 @@ class ClusterService:
         clusters: List[List[int]],
         num_vehicles: int,
         small_truck_vehicle_indices: List[int],
-        gush_dan_indices: Set[int]
+        small_truck_indices: Set[int]
     ) -> Optional[List[List[int]]]:
         """
         Convert clusters to OR-Tools route format, respecting vehicle constraints.
 
         CRITICAL: Routes must NOT include depot nodes. OR-Tools handles depot automatically.
 
-        Assigns clusters with Gush Dan customers to Small Truck vehicle indices.
-        If more Gush Dan clusters than Small Trucks, returns None to trigger fallback.
+        Assigns clusters with small truck zone customers to Small Truck vehicle indices.
+        If more restricted clusters than Small Trucks, returns None to trigger fallback.
 
         Note: This is a "best-effort" seed. Capacity/time are NOT validated here.
         OR-Tools will reject invalid seeds and fallback to default heuristic.
@@ -168,45 +168,45 @@ class ClusterService:
             clusters: List of routes (each is list of customer matrix indices, no depot)
             num_vehicles: Total number of vehicles
             small_truck_vehicle_indices: Vehicle indices that are Small Trucks
-            gush_dan_indices: Customer indices restricted to Small Trucks
+            small_truck_indices: Customer indices restricted to Small Trucks
 
         Returns:
             List of routes indexed by vehicle_id, or None if constraints cannot be satisfied
             Each route is a list of customer indices (NO DEPOT - OR-Tools adds depot automatically)
         """
-        # Separate clusters by whether they contain Gush Dan customers
-        gush_dan_clusters = []
+        # Separate clusters by whether they contain small truck zone customers
+        small_truck_clusters = []
         regular_clusters = []
 
         for cluster in clusters:
-            has_gush_dan = any(idx in gush_dan_indices for idx in cluster)
-            if has_gush_dan:
-                gush_dan_clusters.append(cluster)
+            has_restricted = any(idx in small_truck_indices for idx in cluster)
+            if has_restricted:
+                small_truck_clusters.append(cluster)
             else:
                 regular_clusters.append(cluster)
 
-        logger.info(f"Cluster split: {len(gush_dan_clusters)} Gush Dan clusters, {len(regular_clusters)} regular clusters")
+        logger.info(f"Cluster split: {len(small_truck_clusters)} small truck zone clusters, {len(regular_clusters)} regular clusters")
 
-        # Check if we have enough Small Trucks for Gush Dan clusters
-        if len(gush_dan_clusters) > len(small_truck_vehicle_indices):
-            logger.warning(f"Cannot satisfy Gush Dan constraints: {len(gush_dan_clusters)} clusters need Small Trucks, only {len(small_truck_vehicle_indices)} available")
+        # Check if we have enough Small Trucks for restricted clusters
+        if len(small_truck_clusters) > len(small_truck_vehicle_indices):
+            logger.warning(f"Cannot satisfy small truck zone constraints: {len(small_truck_clusters)} clusters need Small Trucks, only {len(small_truck_vehicle_indices)} available")
             return None
 
         # Build routes array indexed by vehicle_id
         routes = [[] for _ in range(num_vehicles)]
 
-        # Assign Gush Dan clusters to Small Truck vehicles
-        for i, cluster in enumerate(gush_dan_clusters):
+        # Assign small truck zone clusters to Small Truck vehicles
+        for i, cluster in enumerate(small_truck_clusters):
             vehicle_id = small_truck_vehicle_indices[i]
             routes[vehicle_id] = cluster  # NO DEPOT - just customer indices
 
         # Assign regular clusters to remaining vehicles
         big_truck_indices = [i for i in range(num_vehicles) if i not in small_truck_vehicle_indices]
-        remaining_small = small_truck_vehicle_indices[len(gush_dan_clusters):]
+        remaining_small = small_truck_vehicle_indices[len(small_truck_clusters):]
         available_vehicles = big_truck_indices + remaining_small
 
         # Log warning if more clusters than available vehicles
-        total_clusters = len(gush_dan_clusters) + len(regular_clusters)
+        total_clusters = len(small_truck_clusters) + len(regular_clusters)
         if len(regular_clusters) > len(available_vehicles):
             dropped_count = len(regular_clusters) - len(available_vehicles)
             logger.warning(f"More clusters ({total_clusters}) than vehicles ({num_vehicles}). Dropping {dropped_count} clusters from seed.")

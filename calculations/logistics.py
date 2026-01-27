@@ -6,6 +6,7 @@ import pandas as pd
 import math
 from config import Config
 from typing import Dict, Any
+from shared.geo_utils import is_in_small_truck_zone
 
 def calculate_fleet_metrics(df: pd.DataFrame, fleet_settings: Dict[str, Any]) -> pd.DataFrame:
     """
@@ -20,7 +21,6 @@ def calculate_fleet_metrics(df: pd.DataFrame, fleet_settings: Dict[str, Any]) ->
     """
     df_copy = df.copy()
 
-    gush_dan = Config.GUSH_DAN_BOUNDS
     big_truck_vol = fleet_settings.get('big_truck_vol', Config.FLEET_DEFAULTS['big_truck_vol'])
     small_truck_vol = fleet_settings.get('small_truck_vol', Config.FLEET_DEFAULTS['small_truck_vol'])
     safety_factor = fleet_settings.get('safety_factor', Config.FLEET_DEFAULTS['safety_factor'])
@@ -33,13 +33,7 @@ def calculate_fleet_metrics(df: pd.DataFrame, fleet_settings: Dict[str, Any]) ->
         lat, lon = row.get('lat'), row.get('lng')
         volume = row.get('total_volume_m3', 0)
 
-        is_in_gush_dan = (
-            lat is not None and lon is not None and
-            gush_dan['min_lat'] <= lat <= gush_dan['max_lat'] and
-            gush_dan['min_lon'] <= lon <= gush_dan['max_lon']
-        )
-
-        if is_in_gush_dan:
+        if is_in_small_truck_zone(lat, lon):
             truck_type = "Small Truck"
             truck_vol = small_truck_vol
             color = "#FF0000"  # Red

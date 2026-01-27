@@ -144,10 +144,10 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
             base_shift_seconds = int(round(services['max_shift_hours'] * 3600))
 
             # --- Route-Name Based Clustering (Initial Solution Seeding) ---
-            # Compute Gush Dan indices (using shared helper via ClusterService)
+            # Compute small truck zone indices (using shared helper via ClusterService)
             cluster_service = ClusterService()
-            gush_dan_node_indices = cluster_service.get_gush_dan_customers(matrix_coords)
-            logger.info(f"Identified {len(gush_dan_node_indices)} Gush Dan customers for clustering")
+            small_truck_node_indices = cluster_service.get_small_truck_customers(matrix_coords)
+            logger.info(f"Identified {len(small_truck_node_indices)} small truck zone customers for clustering")
 
             # Build initial routes from route names (soft hints)
             initial_routes = None
@@ -165,21 +165,21 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                         clusters,
                         matrix_coords,
                         min_cluster_size=3,
-                        gush_dan_indices=gush_dan_node_indices
+                        small_truck_indices=small_truck_node_indices
                     )
 
                     initial_routes = cluster_service.build_initial_routes_for_ortools(
                         balanced_clusters,
                         num_vehicles=num_small_trucks + num_big_trucks,
                         small_truck_vehicle_indices=list(range(num_small_trucks)),
-                        gush_dan_indices=gush_dan_node_indices
+                        small_truck_indices=small_truck_node_indices
                     )
 
                     if initial_routes:
                         non_empty_count = len([r for r in initial_routes if r])
                         logger.info(f"Built initial routes for {non_empty_count} vehicles")
                     else:
-                        logger.warning("Could not build valid initial routes (Gush Dan constraint conflict)")
+                        logger.warning("Could not build valid initial routes (small truck zone constraint conflict)")
             else:
                 logger.info("No 'current_route' column found, skipping route-name clustering")
 
@@ -201,6 +201,7 @@ def tab_optimization(services: Optional[Dict[str, Any]]) -> None:
                 'small_capacity': small_capacity,
                 'big_capacity': big_capacity,
                 'max_shift_seconds': base_shift_seconds,
+                'master_max_shift_seconds': int(base_shift_seconds * Config.MASTER_ROUTE_TIME_MULTIPLIER),
                 'service_time_seconds': services['service_time_minutes'] * 60
             }
 

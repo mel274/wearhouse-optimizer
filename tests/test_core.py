@@ -13,6 +13,7 @@ sys.modules["openrouteservice"] = MagicMock()
 # Now we can safely import the app code
 from calculations.logistics import calculate_fleet_metrics
 from shared.utils import validate_address, retry_with_backoff
+from shared.geo_utils import identify_small_truck_customers, is_in_small_truck_zone
 from exceptions import DataValidationError
 
 import unittest
@@ -33,11 +34,11 @@ class TestCalculateFleetMetrics(unittest.TestCase):
         def track_assignment(self, key, value):
             assigned_columns[key] = value
 
-        # Configure iterrows to return test data (outside Gush Dan bounds)
+        # Configure iterrows to return test data (outside restricted zones)
         mock_copied_df.iterrows.return_value = [
             (0, Mock(
                 get=lambda key, default=None: {
-                    'lat': 32.0, 'lng': 34.8, 'total_volume_m3': 100.0
+                    'lat': 31.5, 'lng': 34.6, 'total_volume_m3': 100.0  # South of restricted zones
                 }.get(key, default)
             ))
         ]
@@ -64,8 +65,8 @@ class TestCalculateFleetMetrics(unittest.TestCase):
         self.assertEqual(assigned_columns['trucks_needed'], [5])
         self.assertEqual(assigned_columns['color'], ["#0000FF"])
 
-    def test_small_truck_gush_dan_calculation(self):
-        """Test that locations in Gush Dan use small trucks using the real function."""
+    def test_small_truck_restricted_zone_calculation(self):
+        """Test that locations in restricted zones (Ramat Gan) use small trucks."""
         mock_df = Mock()
 
         # Configure copy() to return a mock that supports iterrows and tracks column assignments
@@ -74,11 +75,11 @@ class TestCalculateFleetMetrics(unittest.TestCase):
         def track_assignment(self, key, value):
             assigned_columns[key] = value
 
-        # Configure iterrows to return Gush Dan coordinates
+        # Configure iterrows to return coordinates inside Ramat Gan polygon
         mock_copied_df.iterrows.return_value = [
             (0, Mock(
                 get=lambda key, default=None: {
-                    'lat': 32.08, 'lng': 34.82, 'total_volume_m3': 50.0  # Within Gush Dan bounds
+                    'lat': 32.08, 'lng': 34.82, 'total_volume_m3': 50.0  # Inside Ramat Gan
                 }.get(key, default)
             ))
         ]
@@ -100,6 +101,39 @@ class TestCalculateFleetMetrics(unittest.TestCase):
         self.assertEqual(assigned_columns['trucks_needed'], [3])
         self.assertEqual(assigned_columns['color'], ["#FF0000"])
 
+    def test_big_truck_outside_restricted_zones(self):
+        """Test that locations outside restricted zones (e.g. Haifa) use big trucks."""
+        mock_df = Mock()
+
+        mock_copied_df = Mock()
+        assigned_columns = {}
+        def track_assignment(self, key, value):
+            assigned_columns[key] = value
+
+        # Configure iterrows to return Haifa coordinates (outside all 4 restricted cities)
+        mock_copied_df.iterrows.return_value = [
+            (0, Mock(
+                get=lambda key, default=None: {
+                    'lat': 32.80, 'lng': 34.98, 'total_volume_m3': 50.0  # Haifa - outside restricted zones
+                }.get(key, default)
+            ))
+        ]
+
+        mock_copied_df.__setitem__ = track_assignment
+        mock_df.copy.return_value = mock_copied_df
+
+        fleet_settings = {
+            'big_truck_vol': 32.0,
+            'small_truck_vol': 27.0,
+            'safety_factor': 0.7
+        }
+
+        result = calculate_fleet_metrics(mock_df, fleet_settings)
+
+        # Haifa is outside restricted zones, should use Big Truck
+        self.assertEqual(assigned_columns['truck_type'], ["Big Truck"])
+        self.assertEqual(assigned_columns['color'], ["#0000FF"])
+
     def test_zero_volume_handling(self):
         """Test that zero volume doesn't cause division by zero using the real function."""
         mock_df = Mock()
@@ -110,11 +144,11 @@ class TestCalculateFleetMetrics(unittest.TestCase):
         def track_assignment(self, key, value):
             assigned_columns[key] = value
 
-        # Configure iterrows to return zero volume data
+        # Configure iterrows to return zero volume data (outside restricted zones)
         mock_copied_df.iterrows.return_value = [
             (0, Mock(
                 get=lambda key, default=None: {
-                    'lat': 32.0, 'lng': 34.8, 'total_volume_m3': 0.0
+                    'lat': 31.5, 'lng': 34.6, 'total_volume_m3': 0.0  # South of restricted zones
                 }.get(key, default)
             ))
         ]
@@ -142,11 +176,11 @@ class TestCalculateFleetMetrics(unittest.TestCase):
         def track_assignment(self, key, value):
             assigned_columns[key] = value
 
-        # Configure iterrows to return exact capacity match data
+        # Configure iterrows to return exact capacity match data (outside restricted zones)
         mock_copied_df.iterrows.return_value = [
             (0, Mock(
                 get=lambda key, default=None: {
-                    'lat': 32.0, 'lng': 34.8, 'total_volume_m3': 22.4  # Exactly matches effective capacity
+                    'lat': 31.5, 'lng': 34.6, 'total_volume_m3': 22.4  # South of restricted zones
                 }.get(key, default)
             ))
         ]
@@ -164,6 +198,53 @@ class TestCalculateFleetMetrics(unittest.TestCase):
 
         # Should require exactly 1 truck
         self.assertEqual(assigned_columns['trucks_needed'], [1])
+
+
+class TestSmallTruckZoneDetection(unittest.TestCase):
+    """Test the small truck zone polygon detection functions."""
+
+    def test_is_in_small_truck_zone_inside_ramat_gan(self):
+        """Test that a coordinate inside Ramat Gan is detected."""
+        # Coordinate inside Ramat Gan polygon
+        result = is_in_small_truck_zone(32.08, 34.82)
+        self.assertTrue(result)
+
+    def test_is_in_small_truck_zone_inside_tel_aviv(self):
+        """Test that a coordinate inside Tel Aviv is detected."""
+        # Coordinate inside Tel Aviv-Yafo polygon (central Tel Aviv)
+        result = is_in_small_truck_zone(32.08, 34.78)
+        self.assertTrue(result)
+
+    def test_is_in_small_truck_zone_outside_all(self):
+        """Test that a coordinate outside all zones returns False."""
+        # Haifa - clearly outside all 4 restricted cities
+        result = is_in_small_truck_zone(32.80, 34.98)
+        self.assertFalse(result)
+
+    def test_is_in_small_truck_zone_none_coords(self):
+        """Test that None coordinates return False."""
+        self.assertFalse(is_in_small_truck_zone(None, 34.82))
+        self.assertFalse(is_in_small_truck_zone(32.08, None))
+        self.assertFalse(is_in_small_truck_zone(None, None))
+
+    def test_identify_small_truck_customers(self):
+        """Test identify_small_truck_customers with known coordinates."""
+        # Coords: depot (Jerusalem), inside Ramat Gan, outside (Haifa), inside Tel Aviv
+        coords = [
+            (31.77, 35.21),  # Index 0: Depot (Jerusalem) - skipped
+            (32.08, 34.82),  # Index 1: Inside Ramat Gan - should be flagged
+            (32.80, 34.98),  # Index 2: Haifa - should NOT be flagged
+            (32.08, 34.78),  # Index 3: Inside Tel Aviv - should be flagged
+        ]
+
+        result = identify_small_truck_customers(coords)
+
+        # Should return indices 1 and 3 (inside restricted zones)
+        self.assertIn(1, result)
+        self.assertNotIn(2, result)
+        self.assertIn(3, result)
+        # Depot (index 0) should never be included
+        self.assertNotIn(0, result)
 
 
 class TestValidateAddress(unittest.TestCase):
