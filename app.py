@@ -27,10 +27,10 @@ def main() -> None:
     services = setup_sidebar()
     st.title("Warehouse Location & Route Optimizer")
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4 = st.tabs([ #add tab3 and update tabs order to disable static routes tab
         "Data Upload",
         "Optimization",
-        "Static Routes",
+#        "Static Routes",    #uncomment to enable static routes tab
         "Comparison",
         "Export"
     ])
@@ -39,11 +39,11 @@ def main() -> None:
         tab_data_upload(services)
     with tab2:
         tab_optimization(services)
+#    with tab3: #uncomment to enable static routes tab
+#        tab_static_routes(services) #uncomment to enable static routes tab
     with tab3:
-        tab_static_routes(services)
-    with tab4:
         tab_compare_actuals(services)
-    with tab5:
+    with tab4:
         tab_export()
 
 
