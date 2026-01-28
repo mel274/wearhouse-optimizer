@@ -53,7 +53,7 @@ class Config:
     # Master routes use soft constraints: horizon = UI time × multiplier
     # This allows flexibility for territory planning (master routes include ALL customers,
     # but daily routes only serve a subset)
-    MASTER_ROUTE_TIME_MULTIPLIER = 1.5  # 1.5× UI time as hard cap for master routes
+    MASTER_ROUTE_TIME_MULTIPLIER = 1  # 1.5× UI time as hard cap for master routes
 
     # --- OPTIMIZATION COSTS ---
     # Fleet Squeeze - Nuclear Pricing:
