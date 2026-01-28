@@ -66,7 +66,7 @@ class RouteOptimizer:
                 distance = distance_matrix[i][j]
                 duration = time_matrix[i][j]
                 # Cost formula per plan.md: distance + 6 * duration
-                cost = int(distance + 10 * duration)
+                cost = int(distance + 6 * duration)
                 row.append(cost)
             cost_matrix.append(row)
         
@@ -170,26 +170,9 @@ class RouteOptimizer:
         # Create _vroom.Matrix directly to bypass the wrapper's dtype conversion
         from vroom import _vroom
         
-        # Set the duration matrix with service time baked in.
-        # Add service_time_seconds to every customer column (not depot) so that
-        # max_travel_time accounts for both driving AND service at each stop.
+        # Set the actual time matrix as durations (for time-based constraints like max_travel_time)
         time_matrix = data['time_matrix']
-        service_time = params.get('service_time_seconds', 300)
-        depot = data['depot']
-        num_nodes = len(time_matrix)
-
-        adjusted_time = []
-        for i in range(num_nodes):
-            row = []
-            for j in range(num_nodes):
-                t = time_matrix[i][j]
-                # Add service time when arriving at a customer (not depot)
-                if j != depot:
-                    t += service_time
-                row.append(t)
-            adjusted_time.append(row)
-
-        time_matrix_np = np.array(adjusted_time, dtype=np.uintc)
+        time_matrix_np = np.array(time_matrix, dtype=np.uintc)
         durations_vroom_matrix = _vroom.Matrix(time_matrix_np)
         vroom_input.set_durations_matrix(profile="car", matrix_input=durations_vroom_matrix)
         
